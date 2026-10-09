@@ -78,6 +78,19 @@ object RimeBridge {
             .edit().putBoolean(KEY_ENABLED, enabled).apply()
     }
 
+    /** 可切换的 Rime 方案，顺序即长按循环顺序（需与 assets/rime 中实际存在的方案一致） */
+    val SCHEMAS = listOf("pinyin_simp", "wubi86", "wubi86_pinyin")
+
+    /** 切换 Rime 方案；引擎未就绪或失败时返回 false */
+    fun switchSchema(schemaId: String): Boolean {
+        if (!isReady) return false
+        return try {
+            RimeEngine.getInstance().switchSchema(schemaId)
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
     /** 当前 Rime 方案名（如 pinyin_simp / wubi86），未就绪时返回空串 */
     fun currentSchema(): String = try {
         if (isReady) RimeEngine.getInstance().getCurrentSchema() else ""

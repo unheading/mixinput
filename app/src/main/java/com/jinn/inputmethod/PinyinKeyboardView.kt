@@ -842,6 +842,35 @@ class PinyinKeyboardView @JvmOverloads constructor(
             refreshKeyLabels()
             Diagnostics.i(TAG, "中英切换: ${if (englishMode) "英文" else "中文"}")
         }
+        // 长按「中/英」：循环切换输入引擎 —— 关闭 → Rime拼音 → 五笔86 → 五笔拼音 → 关闭。
+        // 放在长按上是为了不占用已习惯的单击中英切换，而模式开关是低频操作。
+        btnLang.setOnLongClickListener {
+            KeyFeedback.fire(TapSound.G_FUNC)
+            if (!RimeBridge.isModeEnabled(context)) {
+                RimeBridge.setModeEnabled(context, true)
+                RimeBridge.switchSchema(RimeBridge.SCHEMAS.first())
+                Diagnostics.i(TAG, "Rime 模式: 开启（${RimeBridge.SCHEMAS.first()}）")
+            } else {
+                val cur = RimeBridge.currentSchema()
+                val i = RimeBridge.SCHEMAS.indexOf(cur)
+                if (i < 0 || i == RimeBridge.SCHEMAS.lastIndex) {
+                    RimeBridge.setModeEnabled(context, false)
+                    RimeBridge.resetComposition()
+                    Diagnostics.i(TAG, "Rime 模式: 关闭")
+                } else {
+                    val next = RimeBridge.SCHEMAS[i + 1]
+                    RimeBridge.switchSchema(next)
+                    Diagnostics.i(TAG, "Rime 模式: 切方案 → $next")
+                }
+            }
+            composing.clear()
+            lastCandidates = emptyList()
+            lastPredictions = emptyList()
+            lastCommittedWord = ""
+            refreshKeyLabels()
+            refreshCandidateBar()
+            true
+        }
         btnShift.setOnClickListener {
             // 符号层键面全是符号，没有大小写概念：大写键在此层无效
             if (layer == LAYER_SYMBOL) {
@@ -2279,6 +2308,32 @@ class PinyinKeyboardView @JvmOverloads constructor(
 
         // 双拼：先转全拼再查询；显示仍保留双拼原文
         val queryInput = if (shuangpinMode) Shuangpin.toQuanpin(input, scheme) else input
+
+        // ── Rime 模式：候选来自 librime（五笔 / 自定义方案），不经过 Jinn 自带引擎 ──
+        if (RimeBridge.isModeEnabled(context)) {
+            showPinyin(displayText)
+            if (!RimeBridge.isReady) {
+                lastCandidates = emptyList()
+                renderCandidateHint("Rime 引擎初始化中…")
+                return
+            }
+            val rimeCandidates = RimeBridge.query(queryInput)
+            lastCandidates = rimeCandidates
+            if (rimeCandidates.isEmpty()) {
+                renderCandidateHint("Rime 无候选")
+                return
+            }
+            renderCandidateItems(
+                items = rimeCandidates.take(MAX_RENDERED_CANDIDATES),
+                rows = rows,
+                rowHeightPx = perRow,
+                colorToken = skin.functionGlyph,
+                colorRes = R.color.text_primary,
+                onClick = { onCandidateSelected(it) },
+            )
+            return
+        }
+
         val result = PinyinEngine.query(queryInput)
         // 补全诊断：只在末尾存在不完整音节时记录。
         // 绝不在这里再调一次 queryWithCompletion，PinyinEngine.query() 内部
@@ -2499,6 +2554,22 @@ class PinyinKeyboardView @JvmOverloads constructor(
             return
         }
         if (Diagnostics.KEY_TRACE) Diagnostics.v(TAG, "候选上屏: \"$candidate\" (拼音=${composing})")
+
+        // ── Rime 模式：把选中项交给引擎，由上屏文本决定内容（可能含已确定的残码）──
+        if (RimeBridge.isModeEnabled(context) && RimeBridge.isReady) {
+            val idx = lastCandidates.indexOf(candidate)
+            val text = (if (idx >= 0) RimeBridge.selectAndCommit(idx) else null) ?: candidate
+            if (Diagnostics.KEY_TRACE) Diagnostics.v(TAG, "Rime 上屏: \"$text\"")
+            learnChoice(text)
+            listener?.onCommitText(text)
+            composing.clear()
+            lastCandidates = emptyList()
+            lastPredictions = emptyList()
+            lastCommittedWord = ""
+            refreshCandidateBar()
+            return
+        }
+
         learnChoice(candidate)          // 用户词频：这是**明确选择**，学习它
         listener?.onCommitText(candidate)
         // 残码重匹配：全部消费才进入智能预测态，否则候选栏立即显示残码的新候选
