@@ -114,7 +114,8 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      # 把 APK 换成好认的名字，方便作为 Release 附件发布
+      # 把 APK 换成好认的名字，并把签名指纹写进环境变量。
+      # 指纹会显示在 Release 说明里，方便跨构建核对「签名是否稳定」（可直接覆盖安装）。
       - name: Prepare APK
         run: |
           mkdir -p out
@@ -123,6 +124,13 @@ jobs:
             cp "$f" "out/mixinput-${GITHUB_RUN_NUMBER}.apk"
           done
           ls -la out/
+          APK=$(ls out/*.apk 2>/dev/null | head -1)
+          CERT=$(ls "$ANDROID_HOME"/build-tools/*/apksigner 2>/dev/null | tail -1)
+          if [ -n "$APK" ] && [ -n "$CERT" ]; then
+            FP=$("$CERT" verify --print-certs "$APK" 2>/dev/null | grep "SHA-256 digest" | head -1 | awk '{print $NF}')
+          fi
+          echo "SIGN_FP=${FP:-未知}" >> "$GITHUB_ENV"
+          echo "签名指纹: ${FP:-未知}"
 
       # 发布为 Release：手机上一键下载，不像 Artifacts 那样需要登录与翻找。
       # 每次构建一个新 tag（不覆盖历史产物），标记为 prerelease 以免占用 Latest。
@@ -137,7 +145,10 @@ jobs:
 
             - 提交：`${{ github.sha }}`
             - 构建号：${{ github.run_number }}
+            - **签名指纹（SHA-256）**：`${{ env.SIGN_FP }}`
             - 下载下方 Asset 中的 APK 直接安装
+
+            > 签名指纹相同 = 可直接覆盖安装；不同则需先卸载旧版。
           files: out/*.apk
           prerelease: true
           fail_on_unmatched_files: false
