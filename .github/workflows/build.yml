@@ -57,6 +57,15 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
+      # runner 是一次性的：每次跑都会新生成一个 debug 密钥，导致每次产物的签名都不同、
+      # 无法覆盖安装（必须卸载重装、丢数据）。把 debug 密钥缓存起来，让后续运行复用同一份，
+      # 签名就稳定了。（配了 release 签名 Secrets 时以 Secrets 为准）
+      - name: Restore stable debug keystore
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: android-debug-keystore-v1
+
       # 单元测试：结果上传为报告，但失败不阻塞出包。
       # 注意：DocsReferenceTest 等「文档同步门禁」在分支上会失败（我们加了源码但未同步其文档），
       # 因此这里不把测试失败当成构建失败；测试报告仍完整产出，供人工查看回归。
