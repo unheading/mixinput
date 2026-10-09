@@ -24,11 +24,22 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Android SDK diagnostics
+        run: |
+          echo "ANDROID_HOME=${ANDROID_HOME:-unset}"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-unset}"
+          ls -d "$ANDROID_HOME" 2>/dev/null || echo "SDK 目录不存在"
+          which sdkmanager || echo "sdkmanager 不在 PATH"
+          ls "$ANDROID_HOME/cmdline-tools" 2>/dev/null || true
 
-      - name: Accept SDK licenses
-        run: yes | sdkmanager --licenses > /dev/null 2>&1 || true
+      # runner 预装 Android SDK。这里只接受许可 + 备齐本项目需要的组件；
+      # 不依赖第三方 setup action（它的失败会让后续所有步骤被跳过）。
+      - name: Accept SDK licenses and install components
+        run: |
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools" 2>&1 | tail -5 || true
+          sdkmanager --list_installed 2>/dev/null | head -15 || true
 
       - name: Gradle cache
         uses: actions/cache@v4
