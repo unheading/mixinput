@@ -57,14 +57,13 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
-      # runner 是一次性的：每次跑都会新生成一个 debug 密钥，导致每次产物的签名都不同、
-      # 无法覆盖安装（必须卸载重装、丢数据）。把 debug 密钥缓存起来，让后续运行复用同一份，
-      # 签名就稳定了。（配了 release 签名 Secrets 时以 Secrets 为准）
-      - name: Restore stable debug keystore
+      # runner 是一次性的：不固定密钥的话每次都会新生成一份，导致签名变化、无法覆盖安装。
+      # 把密钥库固定在 $HOME/.signing 下并缓存，后续构建复用同一份。
+      - name: Restore signing keystore (cache)
         uses: actions/cache@v4
         with:
-          path: ~/.android/debug.keystore
-          key: android-debug-keystore-v1
+          path: ~/.signing/mixinput.keystore
+          key: mixinput-signing-keystore-v1
 
       # 单元测试：结果上传为报告，但失败不阻塞出包。
       # 注意：DocsReferenceTest 等「文档同步门禁」在分支上会失败（我们加了源码但未同步其文档），
@@ -113,28 +112,48 @@ jobs:
           print(f'total={total} failed={fails + errors} skipped={skipped}')
           PY
 
-      # 有签名密钥就出 release（可覆盖安装、可发布），没有就退化为 debug（可直接安装验证）。
-      # 密钥通过仓库 Secrets 提供，避免把签名材料写进代码库。
-      - name: Build APK
+      # 签名密钥优先级：仓库 Secrets > 缓存/新生成的密钥库。
+      # 结果通过 GITHUB_ENV 传给后续 Gradle 步骤（Jinn 从这四个环境变量读签名）。
+      - name: Prepare signing keystore
         env:
-          KEYSTORE_B64: ${{ secrets.JINN_KEYSTORE_B64 }}
-          KS_PASSWORD: ${{ secrets.JINN_KEYSTORE_PASSWORD }}
-          KS_ALIAS: ${{ secrets.JINN_KEY_ALIAS }}
-          KS_KEY_PASSWORD: ${{ secrets.JINN_KEY_PASSWORD }}
+          SECRET_KEYSTORE_B64: ${{ secrets.JINN_KEYSTORE_B64 }}
+          SECRET_STORE_PASSWORD: ${{ secrets.JINN_KEYSTORE_PASSWORD }}
+          SECRET_KEY_ALIAS: ${{ secrets.JINN_KEY_ALIAS }}
+          SECRET_KEY_PASSWORD: ${{ secrets.JINN_KEY_PASSWORD }}
         run: |
           set -e
-          if [ -n "$KEYSTORE_B64" ]; then
-            echo "使用 Secrets 中的签名密钥构建 release"
-            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
-            export JINN_KEYSTORE_FILE="$RUNNER_TEMP/release.keystore"
-            export JINN_KEYSTORE_PASSWORD="$KS_PASSWORD"
-            export JINN_KEY_ALIAS="$KS_ALIAS"
-            export JINN_KEY_PASSWORD="$KS_KEY_PASSWORD"
-            ./gradlew assembleRelease --no-daemon --stacktrace
+          KS="$HOME/.signing/mixinput.keystore"
+          mkdir -p "$(dirname "$KS")"
+          if [ -n "$SECRET_KEYSTORE_B64" ]; then
+            echo "==> 使用仓库 Secrets 提供的签名密钥"
+            echo "$SECRET_KEYSTORE_B64" | base64 -d > "$KS"
+            echo "JINN_KEYSTORE_PASSWORD=$SECRET_STORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "JINN_KEY_ALIAS=$SECRET_KEY_ALIAS" >> "$GITHUB_ENV"
+            echo "JINN_KEY_PASSWORD=$SECRET_KEY_PASSWORD" >> "$GITHUB_ENV"
           else
-            echo "::warning title=未配置签名密钥::未设置 JINN_KEYSTORE_B64，本次构建 debug APK（debug 签名，可与 release 共存需先卸载）"
-            ./gradlew assembleDebug --no-daemon --stacktrace
+            if [ ! -f "$KS" ]; then
+              echo "==> 首次构建：生成签名密钥（后续构建复用同一份）"
+              keytool -genkeypair -keystore "$KS" -alias mixinput \
+                -keyalg RSA -keysize 2048 -validity 10000 \
+                -storepass mixinput -keypass mixinput \
+                -dname "CN=mixinput, OU=dev, O=mixinput, C=CN"
+            else
+              echo "==> 复用缓存中的签名密钥"
+            fi
+            echo "JINN_KEYSTORE_PASSWORD=mixinput" >> "$GITHUB_ENV"
+            echo "JINN_KEY_ALIAS=mixinput" >> "$GITHUB_ENV"
+            echo "JINN_KEY_PASSWORD=mixinput" >> "$GITHUB_ENV"
           fi
+          echo "JINN_KEYSTORE_FILE=$KS" >> "$GITHUB_ENV"
+          ls -la "$KS"
+
+      # 有固定密钥后总是出 release（R8 优化过、体积更小）；万一 release 失败再回退 debug。
+      - name: Build APK
+        run: |
+          ./gradlew assembleRelease --no-daemon --stacktrace || {
+            echo "::warning title=release 构建失败::回退为 debug 构建"
+            ./gradlew assembleDebug --no-daemon --stacktrace
+          }
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
