@@ -65,6 +65,8 @@ android {
     buildFeatures {
         // 检查更新需要读取 BuildConfig.VERSION_CODE
         buildConfig = true
+        // 插件契约（IMixPlugin.aidl）需要 AIDL 支持
+        aidl = true
     }
 
     lint {

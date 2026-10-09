@@ -182,6 +182,18 @@
                 android:minWidth="0dp" />
         </LinearLayout>
 
+        <!-- 插件管理：独立全屏页（列出已安装的扩展插件及其能力） -->
+        <LinearLayout
+            style="@style/SettingsCardRow">
+
+            <Button
+                style="@style/SettingsButton"
+                android:id="@+id/btn_plugins"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:minWidth="0dp" />
+        </LinearLayout>
+
         <!-- 敲击音效反馈 / 剪贴板自定义：两按钮并排 → 各自的独立全屏页 -->
         <LinearLayout
             style="@style/SettingsCardRow">

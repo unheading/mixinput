@@ -333,6 +333,15 @@ class SettingsActivity : ComponentActivity() {
             text = TEXT_RARE_ENTRY
             setOnClickListener { startActivity(Intent(this@SettingsActivity, RareCharsActivity::class.java)) }
         }
+        // 插件：独立全屏页（列出已安装的扩展插件及其能力；插件为独立 APK，不占主程序体积）
+        findViewById<Button>(R.id.btn_plugins).apply {
+            text = "插件"
+            setOnClickListener {
+                startActivity(
+                    Intent(this@SettingsActivity, com.jinn.inputmethod.plugin.PluginManagerActivity::class.java),
+                )
+            }
+        }
         // 敲击音效反馈：独占下一行的单按钮入口 → 独立全屏页（音效六组音色 + 震动四档，改动即落盘）
         findViewById<Button>(R.id.btn_tap_sound).apply {
             text = TEXT_TAP_SOUND_ENTRY

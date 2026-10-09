@@ -91,6 +91,11 @@
             android:name=".RareCharsActivity"
             android:exported="false" />
 
+        <!-- 插件管理页：从设置页「插件」按钮进入（列出已安装的扩展插件及其能力） -->
+        <activity
+            android:name="com.jinn.inputmethod.plugin.PluginManagerActivity"
+            android:exported="false" />
+
         <!-- 收藏符号编辑页：从设置页「编辑收藏符号」按钮进入 -->
         <activity
             android:name=".FavoriteSymbolsActivity"
