@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  剪贴板历史数据提取规则（Android 12+，方案第二十一节）：
+  云端备份（cloud-backup）排除剪贴板数据库；设备间迁移（device-transfer）
+  同样排除，防止加密正文与新设备的密钥不匹配造成不可解数据。
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude
+            domain="database"
+            path="jinn_clipboard.db" />
+        <!-- SQLite 在 WAL 模式下会把最近提交写在 -wal 里，-journal/-shm 同理：
+             只排除主库文件会漏掉这部分（backup_rules.xml 已排除这三项，这里必须同步）。 -->
+        <exclude
+            domain="database"
+            path="jinn_clipboard.db-journal" />
+        <exclude
+            domain="database"
+            path="jinn_clipboard.db-wal" />
+        <exclude
+            domain="database"
+            path="jinn_clipboard.db-shm" />
+        <exclude
+            domain="file"
+            path="user_freq.txt" />
+        <exclude
+            domain="file"
+            path="user_freq.txt.tmp" />
+        <exclude
+            domain="sharedpref"
+            path="jinn_inputmethod.xml" />
+        <!-- 平台写的 `.bak`（= 上一版配置，含旧凭据密文）也必须排（2026-10-02 修复 L-408） -->
+        <exclude
+            domain="sharedpref"
+            path="jinn_inputmethod.xml.bak" />
+        <exclude
+            domain="sharedpref"
+            path="jinn_clipboard.xml" />
+        <exclude
+            domain="sharedpref"
+            path="jinn_clipboard.xml.bak" />
+
+    <!-- 索引缓存是可**再生**的（基础 14 MB 上下、可选包各十几 MB）：交给 Auto Backup 只会挤占
+         25MB 配额（超限会让整包备份失败，连真正该备份的下载词库也备份不上），而换机恢复后
+         它的键（APK mtime）必然对不上，仍要靠清扫自愈。词库包 `dicts/` 是用户下载的**真数据**，
+         故意**不**排除（`BUG.md` L-152）。 -->
+    <exclude
+        domain="file"
+        path="index/" />
+    <!-- 诊断日志目录在 `external` 域（`getExternalFilesDir()/logs/`）里，默认会被上传：
+         日志含崩溃快照（退回全量时含其它应用的行）、端点主机名、凭据长度指纹，
+         且 32 MB 预算 > 25 MB 配额会让整包备份失败（2026-10-02 修复） -->
+    <exclude
+        domain="external"
+        path="logs/" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude
+            domain="database"
+            path="jinn_clipboard.db" />
+        <exclude
+            domain="database"
+            path="jinn_clipboard.db-journal" />
+        <exclude
+            domain="database"
+            path="jinn_clipboard.db-wal" />
+        <exclude
+            domain="database"
+            path="jinn_clipboard.db-shm" />
+        <exclude
+            domain="file"
+            path="user_freq.txt" />
+        <exclude
+            domain="file"
+            path="user_freq.txt.tmp" />
+        <exclude
+            domain="sharedpref"
+            path="jinn_inputmethod.xml" />
+        <!-- 平台写的 `.bak`（= 上一版配置，含旧凭据密文）也必须排（2026-10-02 修复 L-408） -->
+        <exclude
+            domain="sharedpref"
+            path="jinn_inputmethod.xml.bak" />
+        <exclude
+            domain="sharedpref"
+            path="jinn_clipboard.xml" />
+        <exclude
+            domain="sharedpref"
+            path="jinn_clipboard.xml.bak" />
+
+    <!-- 索引缓存是可**再生**的（基础 14 MB 上下、可选包各十几 MB）：交给 Auto Backup 只会挤占
+         25MB 配额（超限会让整包备份失败，连真正该备份的下载词库也备份不上），而换机恢复后
+         它的键（APK mtime）必然对不上，仍要靠清扫自愈。词库包 `dicts/` 是用户下载的**真数据**，
+         故意**不**排除（`BUG.md` L-152）。 -->
+    <exclude
+        domain="file"
+        path="index/" />
+    <!-- 诊断日志目录在 `external` 域（`getExternalFilesDir()/logs/`）里，默认会被上传：
+         日志含崩溃快照（退回全量时含其它应用的行）、端点主机名、凭据长度指纹，
+         且 32 MB 预算 > 25 MB 配额会让整包备份失败（2026-10-02 修复） -->
+    <exclude
+        domain="external"
+        path="logs/" />
+    </device-transfer>
+</data-extraction-rules>

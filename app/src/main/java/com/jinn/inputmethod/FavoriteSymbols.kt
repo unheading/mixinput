@@ -1,0 +1,146 @@
+package com.jinn.inputmethod
+
+import org.json.JSONArray
+
+/**
+ * 「收藏」分组：用户自由 DIY 的符号集（默认第三位：全角/半角/收藏/…）。
+ *
+ * 持久化在 [Prefs.favoriteSymbols]，格式为 JSON 的二维数组（页的数组，页内是符号的数组）
+ *，页内符号按序铺 26 键位（KeyboardLayouts.favoriteGroup）。
+ *
+ * 结构规则（全部由本对象纯函数保证）：
+ * - 每页最多 [PER_PAGE]（26）个；追加时末页满 26 自动开新页；
+ * - 追加全局去重（已存在返回 false，由调用方提示「已存在」）；
+ * - 删除后后续符号前移补位（重排即天然满足「非末页恒 26 键」的全表规范），删空的页自动收起；
+ * - 单项限长 [MAX_CHARS]（键面长文本会自动缩字号，但过长的可读性差）；
+ * - 空串与超长项不算符号：[parse] 里滤掉，与写入侧 [append] 的两道闸同口径。
+ *
+ * 序列化容错：`null`（从未编辑过）→ 出厂预置 [DEFAULT_ITEMS]；**整份**读不出来（含非空数组里
+ * 一页都不成数组）→ 回退预置；**单页**坏掉只丢该页，其余原样保留（BUG.md L-1167）；
+ * `"[]"`（用户删光）→ 空组，删光是用户的明确意愿，不回退预置。
+ *
+ * [parse] 的输出恒为规范结构（每页 ≤ [PER_PAGE]、非末页满页、无重复、无空页、无空白/超长项）：
+ * 数据可能来自旧版本或被外部改写，不归一就会出现「编辑页看得到、键盘上看不到」
+ * （[KeyboardLayouts.favoriteGroup] 只铺 26 个键位，超出的部分静默丢弃）。
+ * 页边界属实现细节：归一可能合并非规范数据的页（如 `[[3 项],[1 项]]` → `[[4 项]]`），
+ * 但符号集合与顺序不变；规范结构（非末页恒 26）下重新分页是恒等变换，用户无感。
+ *
+ * 全部为纯函数，可直接 JVM 单测（见 `FavoriteSymbolsTest`）。
+ */
+object FavoriteSymbols {
+
+    /** 每页符号数（= 键盘 26 键位） */
+    const val PER_PAGE = 26
+
+    /** 分组标签（进入 [SymbolOrder.DEFAULT] 的第 3 位） */
+    const val LABEL = "收藏"
+
+    /** 单个符号的最大字符数 */
+    const val MAX_CHARS = 8
+
+    /** 出厂预置：D I Y 三个字符（用户可自由删改） */
+    val DEFAULT_ITEMS = listOf("D", "I", "Y")
+
+    /**
+     * 持久化串 → 页结构（恒为规范结构，见类注释）；[raw] 为 null（从未编辑）或损坏 → 出厂预置；
+     * `"[]"` → 空组。
+     */
+    fun parse(raw: String?): List<List<String>> {
+        if (raw == null) return listOf(DEFAULT_ITEMS)
+        if (raw.isBlank()) return emptyList()
+        // 只有**整份读不出来**才回退预置；单页坏掉只丢该页（BUG.md L-1167）——否则一页结构
+        // 不对就把用户攒的整份收藏换成出厂预置，且全程无提示。
+        val arr = try {
+            JSONArray(raw)
+        } catch (_: Exception) {
+            return listOf(DEFAULT_ITEMS)
+        }
+        // 一步完成「拉平 + 去空白 + 全局去重（保序）」；空页与超页在重新分页时自然消解。
+        // 空白与超长项必须在这里滤掉：写入侧 [append] 有两道闸，而数据可能来自旧版本或被外部
+        // 改写（含备份导入）—— 不过滤就会出现「键面空白、按下无声」的空槽键
+        // （BUG.md 第 15 批 L7）。
+        val flat = LinkedHashSet<String>()
+        var readablePages = 0
+        for (p in 0 until arr.length()) {
+            val page = runCatching { arr.getJSONArray(p) }.getOrNull() ?: continue
+            readablePages++
+            for (i in 0 until page.length()) {
+                val s = runCatching { page.getString(i) }.getOrNull()?.let { clean(it) } ?: continue
+                if (s.isNotEmpty() && withinLimit(s)) flat.add(s)
+            }
+        }
+        // 非空数组里一页都读不出来 = 结构整体不符（如 `[1,2,3]`）⇒ 与「整份损坏」同等处理
+        if (readablePages == 0 && arr.length() > 0) return listOf(DEFAULT_ITEMS)
+        return flat.toList().chunked(PER_PAGE)
+    }
+
+    /** 清洗用的字符类：C（控制 / 格式 / 零宽 —— 含 U+200B、U+FEFF、方向控制）× Z（各类 Unicode 分隔符） */
+    private val CLEAN_PATTERN = Regex("[\\p{C}\\p{Z}]")
+
+    /**
+     * 符号清洗（写入 / 追加 / 解析**同一口径**，BUG-36）。
+     *
+     * `String.trim()` 只去 ASCII ≤ 0x20 的空白：不换行空格 U+00A0、表意空格 U+3000、零宽空格 U+200B、
+     * BOM U+FEFF 都会原样留下 —— 这些字符在 26 键的键面上**看不见**，却占着一个格子：用户看到
+     * 「空槽键」，按下去没反应，而且删不掉（他找不到那个字符）。粘贴文本、导入备份、手工改 prefs
+     * 三条路都可能带进来。
+     *
+     * 因此按 Unicode 类别清：`\p{C}`（控制 / 格式 / 代理 / 私用 / 未分配）+ `\p{Z}`（分隔符，含上面
+     * 两个空格），清完再 trim 一次（清出的空洞会让首尾露出普通空格）。
+     */
+    fun clean(text: String): String = text.replace(CLEAN_PATTERN, "").trim()
+
+    /**
+     * 序列化后是否超出写入上限 [Prefs.MAX_FAVORITE_SYMBOLS_CHARS]。
+     *
+     * 写入侧（`Prefs.favoriteSymbols` 的 setter）超限会**静默丢弃**并保留旧值，因此调用方必须先
+     * 判一次并给用户可见提示，否则「刚添加的符号凭空消失」且零提示（BUG.md 第 15 批 M5）。
+     */
+    fun overCapacity(pages: List<List<String>>): Boolean =
+        serialize(pages).length > Prefs.MAX_FAVORITE_SYMBOLS_CHARS
+
+    /**
+     * 单项是否在限长内 —— 按**码点**数判（BUG-37）。
+     *
+     * `String.length` 是 UTF-16 码元数：一个 astral 字符（emoji、星号外的小众符号）占 2 ——
+     * 5 个 emoji 就被算成 10 而拒收，用户看到的是「明明只打了 5 个字符」。写入（[append]）与
+     * 解析（[parse]）必须同口径，否则解析会把写入侧刚收下的项再滤掉。
+     */
+    fun withinLimit(item: String): Boolean = item.codePointCount(0, item.length) <= MAX_CHARS
+
+    /** 页结构 → 持久化串（空组序列化为 `[]`） */
+    fun serialize(pages: List<List<String>>): String {
+        val arr = JSONArray()
+        pages.forEach { page ->
+            val p = JSONArray()
+            page.forEach { p.put(it) }
+            arr.put(p)
+        }
+        return arr.toString()
+    }
+
+    /**
+     * 追加一个符号：全局去重 + 末页满 [PER_PAGE] 自动开新页。
+     * 返回 (新页结构, 是否成功)，空串/超长/已存在均为 false。
+     */
+    fun append(pages: List<List<String>>, item: String): Pair<List<List<String>>, Boolean> {
+        val s = clean(item)
+        if (s.isEmpty() || !withinLimit(s)) return pages to false
+        if (pages.any { it.contains(s) }) return pages to false
+        val last = pages.lastOrNull()
+        val next = when {
+            last == null -> listOf(listOf(s))
+            last.size >= PER_PAGE -> pages + listOf(listOf(s))
+            else -> pages.dropLast(1) + listOf(last + s)
+        }
+        return next to true
+    }
+
+    /** 删除全局扁平下标处的符号：后续前移补位，删空的页自动收起 */
+    fun removeAt(pages: List<List<String>>, flatIndex: Int): List<List<String>> {
+        val flat = pages.flatten()
+        if (flatIndex !in flat.indices) return pages
+        val rest = flat.toMutableList().apply { removeAt(flatIndex) }
+        return rest.chunked(PER_PAGE)
+    }
+}

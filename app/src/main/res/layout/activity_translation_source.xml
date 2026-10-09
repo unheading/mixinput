@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 翻译原文范围设置页（2026-09-30 定）：每家翻译服务独立配置「哪些算翻译原文」与
+     「单次翻译的字节上限」。文案（含 hint 与官方限制说明）全部在 TranslationSourceActivity
+     里下发（strings.xml 默认不改动），布局里只用 `labelFor` 关联标签与控件（无障碍 + lint 基线）。
+     落盘时机：下拉 / 单选即时写，数字输入框在 onPause 写（见该页 onPause 的说明） -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    style="@style/PageRoot"
+    android:orientation="vertical">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <TextView
+            style="@style/PageTitle"
+            android:id="@+id/text_source_title"
+            android:layout_height="wrap_content" />
+
+        <Button
+            style="@style/PageCloseButton"
+            android:id="@+id/btn_source_close" />
+    </LinearLayout>
+
+    <TextView
+        style="@style/PageDesc"
+        android:id="@+id/text_source_desc"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:overScrollMode="never"
+        android:scrollbars="none">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <LinearLayout style="@style/SettingsCard">
+                <TextView
+                    style="@style/SettingsLabel"
+                    android:id="@+id/label_source_provider"
+                    android:labelFor="@id/spinner_source_provider"/>
+
+                <Spinner
+                    style="@style/SettingsField"
+                    android:id="@+id/spinner_source_provider"
+                    android:layout_width="match_parent"
+                    android:layout_marginTop="2dp"
+                    android:spinnerMode="dropdown"/>
+
+            </LinearLayout>
+            <LinearLayout style="@style/SettingsCard">
+                <TextView
+                    style="@style/SettingsLabel"
+                    android:id="@+id/label_source_scope"
+                    android:layout_marginTop="6dp"/>
+
+                <RadioGroup
+                    android:id="@+id/group_source_scope"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical">
+
+                    <RadioButton
+                        android:id="@+id/radio_scope_line_before"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:textColor="@color/text_primary"
+                        android:textSize="14sp" />
+
+                    <RadioButton
+                        android:id="@+id/radio_scope_line_full"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:textColor="@color/text_primary"
+                        android:textSize="14sp" />
+
+                    <RadioButton
+                        android:id="@+id/radio_scope_before_all"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:textColor="@color/text_primary"
+                        android:textSize="14sp" />
+
+                    <RadioButton
+                        android:id="@+id/radio_scope_all"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:textColor="@color/text_primary"
+                        android:textSize="14sp" />
+                </RadioGroup>
+
+                <TextView
+                    android:id="@+id/text_source_scope_detail"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:paddingStart="8dp"
+                    android:paddingTop="2dp"
+                    android:paddingEnd="8dp"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="12sp" />
+
+            </LinearLayout>
+            <LinearLayout style="@style/SettingsCard">
+                <TextView
+                    style="@style/SettingsLabel"
+                    android:id="@+id/label_source_max_bytes"
+                    android:layout_marginTop="6dp"
+                    android:labelFor="@id/edit_source_max_bytes"/>
+
+                <EditText
+                    style="@style/SettingsField"
+                    android:id="@+id/edit_source_max_bytes"
+                    android:layout_width="match_parent"
+                    android:layout_marginTop="2dp"
+                    android:importantForAutofill="no"
+                    android:inputType="number"
+                    android:maxLength="7"
+                    android:saveEnabled="false"/>
+
+                <TextView
+                    style="@style/CardHint"
+                    android:id="@+id/text_source_official"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:paddingTop="4dp"/>
+
+                <TextView
+                    style="@style/CardHint"
+                    android:id="@+id/text_source_truncate"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:paddingTop="8dp"
+                    android:paddingBottom="12dp"/>
+            </LinearLayout>
+        </LinearLayout>
+    </ScrollView>
+</LinearLayout>

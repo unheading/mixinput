@@ -1,0 +1,1771 @@
+package com.jinn.inputmethod
+
+import android.Manifest
+import android.app.AlertDialog
+import android.app.Dialog
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
+import android.text.InputType
+import android.view.View
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
+import android.widget.ArrayAdapter
+import android.widget.Button
+import android.widget.CheckBox
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.ProgressBar
+import android.widget.RadioButton
+import android.widget.RadioGroup
+import android.widget.Switch
+import android.widget.TextView
+import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
+
+/**
+ * 设置页：配置飞牛 NAS 上的 Jinn 服务端地址、识别语言、提示词，
+ * 引导授权麦克风、启用并切换到本输入法。同时作为应用入口从桌面启动。
+ */
+class SettingsActivity : ComponentActivity() {
+
+    /**
+     * 主题应用点：必须在这里（早于 `onCreate` 与任何资源解析）。
+     * 若放到 `onCreate` 里再 `setTheme`，会先按系统配置解析一帧再换色，那就是"打开页面闪一下"的来源。
+     * 跟随系统时 [ThemeManager.themedContext] 原样返回 base，行为与改造前一致。
+     */
+    override fun attachBaseContext(newBase: android.content.Context) {
+        super.attachBaseContext(ThemeManager.themedContext(newBase, Prefs(newBase)))
+    }
+
+    private lateinit var prefs: Prefs
+
+    private lateinit var editHost: EditText
+    private lateinit var editPort: EditText
+    private lateinit var checkLockServer: CheckBox
+    private lateinit var spinnerLanguage: UserAwareSpinner
+    private lateinit var spinnerDefaultMode: UserAwareSpinner
+    private lateinit var spinnerShuangpin: UserAwareSpinner
+
+    private lateinit var editPrompt: EditText
+    private lateinit var checkStrip: CheckBox
+    private lateinit var checkComposing: CheckBox
+    private lateinit var btnGrant: Button
+    private lateinit var btnEnable: Button
+    private lateinit var btnPick: Button
+    private lateinit var btnSave: Button
+    private lateinit var textTest: TextView
+    private lateinit var textMicState: TextView
+
+    // 功能开关（自动唤起键盘 / 词频学习 / 预测 / 语音 / 键面韵母提示 / 拼音声韵显示）
+    private lateinit var switchAutoShowKeyboard: Switch
+    private lateinit var switchUserLearning: Switch
+    private lateinit var switchPredict: Switch
+    private lateinit var switchVoiceInput: Switch
+
+    /** 在线翻译（BYOK）：总开关 + 入口按钮 + 状态摘要（文案全部代码下发） */
+    private lateinit var switchTranslate: Switch
+    private lateinit var btnTranslateSettings: Button
+    private lateinit var textTranslateState: TextView
+
+
+    /** 模糊音容错 / 加更多生僻字入口按钮（文案在代码里下发：strings.xml 默认不改动） */
+    private lateinit var btnFuzzyPinyin: Button
+
+    /** 「只使用繁体字」胶囊开关（2026-09-27 起：候选里的简体字全部替换为繁体字；与「自动唤起键盘」同行） */
+    private lateinit var switchUseTraditional: Switch
+
+    // 检查更新：版本号取构建日期，与远程 tag 比较
+    private lateinit var btnCheckUpdate: Button
+    /** 「打开下载页面」：与检查结果无关，直接跳 Gitee 发行版列表 */
+    private lateinit var btnUpdateDownload: Button
+    /** 更新检查状态：只区分「空闲 / 进行中」，结果由对话框呈现（见 [UpdateState]） */
+    private var updateState: UpdateState = UpdateState.Idle
+    /** 语音相关区块（授权麦克风 / NAS 语音）：随总开关动态隐藏 */
+    private lateinit var cardMicPermission: View
+    private lateinit var cardVoiceServer: View
+
+    // Root 增强模式（剪贴板数据目录安全审计，与已移除的保活无关）
+
+    // 诊断
+    private lateinit var btnExportDiag: Button
+    private lateinit var textDiagDir: TextView
+
+    /** 待写入用户选定位置的诊断包（生成在缓存目录，写入或取消后删除） */
+    private var pendingDiagZip: java.io.File? = null
+
+    // 配置备份（导出 / 导入）
+    private lateinit var btnConfigExport: Button
+    private lateinit var btnConfigImport: Button
+    private lateinit var textConfigHint: TextView
+
+    /** 待写入用户选定位置的配置包（生成在缓存目录，写入或取消后删除） */
+    private var pendingConfigZip: java.io.File? = null
+
+    /** 已解密待导入的临时 zip（跨对话框保存；导入结束或取消后删除） */
+    private var pendingImportZip: java.io.File? = null
+
+    /** 处理期间的模态进度框（加密/解密/写入都可能耗时上秒，没有可见反馈用户会以为点了没反应） */
+    private var busyDialog: AlertDialog? = null
+
+    /**
+     * 导入进行中标志（后台线程置假、主线程读，故 @Volatile）。
+     *
+     * 为什么需要：导入要按节多次重开同一个明文 zip，而旋转/回收会走 `onDestroy`；
+     * 那里若把正在读的 zip 删掉，导入会以「包不完整/已损坏」这种完全不沾边的原因失败。
+     */
+    @Volatile
+    private var importInFlight = false
+
+    /** 三个配置流程对话框：旋转/回收时要显式 dismiss，否则窗口随 Activity 销毁而泄漏（WindowLeaked） */
+    private var exportDialog: AlertDialog? = null
+    private var importPwdDialog: AlertDialog? = null
+    private var importConfirmDialog: AlertDialog? = null
+
+    /**
+     * 提示类对话框（更新提示 / 结果提示 / 时间选择器）：同一时刻只留一个，走 [showTipDialog] 弹。
+     *
+     * 这些框由代码创建，旋转重建时不会自动恢复 —— 不显式 dismiss 就是 WindowLeaked
+     * （manifest 未声明 configChanges，旋转必然重建页面）。
+     */
+    private var tipDialog: Dialog? = null
+
+    // 剪贴板
+
+    /** 主线程 Handler：保存配置后延迟片刻再杀进程重启输入法 */
+    private val uiHandler = Handler(Looper.getMainLooper())
+
+    /**
+     * 落盘闸门：只有**用户亲手操作过**下拉才允许写配置 —— 判据来自 [UserAwareSpinner.userInteracted]。
+     *
+     * 不能只用「初始化是否完成」做闸门：`setSelection` 之外，Activity 恢复实例状态
+     * （`onRestoreInstanceState`）也会触发 `onItemSelected`，而且是在 `onCreate` 返回之后，
+     * 只靠 ready 标志挡不住，会把用户配置静默改成上次的临时选择。
+     * 原先的探针只在 `setOnTouchListener` 里置位 ⇒ 键盘确认键与读屏选中的值**不落盘**
+     * （BUG.md L-821，真机取证）；[UserAwareSpinner] 把触摸 / 确认键 / 无障碍三条用户路径都覆盖，
+     * 而 `setSelection` 与实例状态恢复两条程序化路径都不经过它。
+     */
+
+    /**
+     * 定时换色的准点定时器（见 [ThemeManager.ScheduledThemeTicker]）：[onStart] 对一次表并排下一次，
+     * [onStop] 撤掉。原先本页自带一份 Handler + `appliedThemeDark` 字段，2026-10-02 收归共用实现（L-476）。
+     */
+    private val themeTicker by lazy { ThemeManager.scheduledRebuildTicker(this) }
+
+    /**
+     * 麦克风被永久拒绝（拒绝后系统不再弹窗）。
+     *
+     * 该状态下再 launch 会立刻回调失败、按钮永远没效果 —— 唯一出路是系统应用详情页，
+     * 所以按钮文案与动作都改走那里（见 [requestMic]）。
+     */
+    private var micDeniedForever = false
+
+    /**
+     * 本页是否已发起过权限请求。
+     *
+     * 「已发起但仍未授予」是比 `shouldShowRequestPermissionRationale` 更可靠的
+     * 「弹窗不会再出现」判据 —— Android 10 起第二次请求会被系统静默拒绝（连弹窗都没有），
+     * 而那个 API 此时仍返回 true，只看它会让按钮继续「点了没反应」。
+     */
+    private var micRequested = false
+
+    /** Activity Result API 替代已弃用的 requestPermissions */
+    private val micPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        // 授权成功后复位「已请求」：之后若被系统撤销，仍可重新走弹窗
+        if (granted) micRequested = false
+        // 拒绝且系统不再允许弹窗 → 记下来供按钮切换
+        micDeniedForever = !granted &&
+            !shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO)
+        refreshMicState()
+    }
+
+    /**
+     * 诊断包导出：走系统文件选择器让用户自选保存位置（全程不申请存储权限）。
+     *
+     * 回调可能发生在 Activity 重建之后（进程被系统回收再恢复，ColorOS 上概率不低）：
+     * 此时内存字段已丢，用缓存目录里最近的包兜底定位；两条异常分支都必须明确提示，
+     * 否则会静默什么都不做，并在目标位置留下 0 字节空文件。
+     */
+    private val exportDiagLauncher = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri ->
+        val src = pendingDiagZip ?: Diagnostics.latestBundle(this)
+        pendingDiagZip = null
+        when {
+            uri == null -> {
+                Diagnostics.i(TAG, "exportDiagnostics: 用户取消导出（清理临时包 ${src?.name ?: "无"}）")
+                src?.delete()
+                resetDiagHint()
+            }
+            src == null || !src.isFile -> {
+                Diagnostics.w(TAG, "exportDiagnostics: 临时包不存在（导出被中断）")
+                textDiagDir.text = getString(R.string.settings_diag_export_fail, "导出被中断，请重试")
+            }
+            else -> copyDiagZipTo(uri, src)
+        }
+    }
+
+    /**
+     * 配置包导出：与诊断包同一套 SAF 流程（先在缓存目录打包，再让用户挑保存位置）。
+     *
+     * 回调可能发生在 Activity 重建之后（ColorOS 上概率不低）：内存字段已丢时用缓存目录里
+     * 最近的包兜底定位；用户取消则清理临时包，避免缓存目录堆积。
+     */
+    private val exportConfigLauncher = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri ->
+        val src = pendingConfigZip ?: ConfigBackupManager.latestBundle(this)
+        pendingConfigZip = null
+        when {
+            uri == null -> {
+                Diagnostics.i(TAG, "exportConfig: 用户取消导出（清理临时包 ${src?.name ?: "无"}）")
+                src?.delete()
+                textConfigHint.text = TEXT_EXPORT_CANCELED
+            }
+            src == null || !src.isFile -> {
+                Diagnostics.w(TAG, "exportConfig: 临时包不存在（导出被中断）")
+                textConfigHint.text = TEXT_EXPORT_FAIL
+            }
+            else -> copyConfigZipTo(uri, src)
+        }
+    }
+
+    /** 配置包导入：走系统文件选择器读取（SAF，全程不申请存储权限） */
+    private val importConfigLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) {
+            Diagnostics.i(TAG, "importConfig: 用户取消选择文件")
+            textConfigHint.text = TEXT_IMPORT_CANCELED
+            btnConfigImport.isEnabled = true
+        } else {
+            askImportPassword(uri)
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        Diagnostics.init(this)
+        setContentView(R.layout.activity_settings)
+        prefs = Prefs(this)
+        Diagnostics.i(TAG, "onCreate: 设置页启动")
+
+        editHost = findViewById(R.id.edit_host)
+        editPort = findViewById(R.id.edit_port)
+        checkLockServer = findViewById(R.id.check_lock_server)
+        spinnerLanguage = findViewById(R.id.spinner_language)
+        spinnerDefaultMode = findViewById(R.id.spinner_default_mode)
+        spinnerShuangpin = findViewById(R.id.spinner_shuangpin)
+
+        editPrompt = findViewById(R.id.edit_prompt)
+        checkStrip = findViewById(R.id.check_strip)
+        checkComposing = findViewById(R.id.check_composing)
+        btnGrant = findViewById(R.id.btn_grant)
+        btnEnable = findViewById(R.id.btn_enable)
+        btnPick = findViewById(R.id.btn_pick)
+        btnSave = findViewById(R.id.btn_save)
+        textTest = findViewById(R.id.text_test)
+        textMicState = findViewById(R.id.text_mic_state)
+
+        switchAutoShowKeyboard = findViewById(R.id.switch_auto_show_keyboard)
+        switchUserLearning = findViewById(R.id.switch_user_learning)
+        switchPredict = findViewById(R.id.switch_predict)
+        switchVoiceInput = findViewById(R.id.switch_voice_input)
+        // 在线翻译（BYOK）：开关 + 入口 + 状态摘要，文案全部代码下发（strings.xml 默认不改动）
+        switchTranslate = findViewById(R.id.switch_translate)
+        switchTranslate.text = TEXT_TRANSLATE_SWITCH
+        btnTranslateSettings = findViewById(R.id.btn_translate_settings)
+        btnTranslateSettings.text = TEXT_TRANSLATE_SETTINGS
+        btnTranslateSettings.setOnClickListener {
+            Diagnostics.i(TAG, "设置页: 打开翻译设置")
+            runCatching { startActivity(Intent(this, TranslationSettingsActivity::class.java)) }
+                .onFailure { Diagnostics.w(TAG, "打开翻译设置失败: ${it.message}") }
+        }
+        textTranslateState = findViewById(R.id.text_translate_state)
+
+        // 只使用繁体字：候选里的简体字全部替换为繁体字（文案同样代码下发）
+        switchUseTraditional = findViewById(R.id.switch_use_traditional)
+        switchUseTraditional.text = TEXT_USE_TRADITIONAL
+        findViewById<TextView>(R.id.text_use_traditional_desc).text = "开启后候选全部显示繁体字"
+        btnCheckUpdate = findViewById(R.id.btn_check_update)
+        btnUpdateDownload = findViewById(R.id.btn_update_download)
+        bindCheckUpdate()
+        // 打开设置页时的自动检查：距上次成功检查 ≥7 天才执行（失败静默，见 maybeAutoCheckUpdate）
+        maybeAutoCheckUpdate()
+        cardMicPermission = findViewById(R.id.card_mic_permission)
+        cardVoiceServer = findViewById(R.id.card_voice_server)
+        btnExportDiag = findViewById(R.id.btn_export_diag)
+        textDiagDir = findViewById(R.id.text_diag_dir)
+
+
+        // 收藏符号编辑：单按钮入口，打开独立编辑页
+        findViewById<Button>(R.id.btn_edit_favorites).setOnClickListener {
+            startActivity(Intent(this, FavoriteSymbolsActivity::class.java))
+        }
+        // 符号分组顺序：单按钮入口，打开独立排序页（设置主页只留一个按钮，不再内嵌列表）
+        findViewById<Button>(R.id.btn_symbol_order).setOnClickListener {
+            startActivity(Intent(this, SymbolOrderActivity::class.java))
+        }
+        // 补充短语词库：独立页面按需下载分片短语库（词库_第 2/3/4 部分）
+        findViewById<Button>(R.id.btn_dict_expand).setOnClickListener {
+            Diagnostics.i(TAG, "设置页: 打开分类词库")
+            runCatching { startActivity(Intent(this, DictManagerActivity::class.java)) }
+                .onFailure { Diagnostics.w(TAG, "打开分类词库失败: ${it.message}") }
+        }
+        // 按钮圆角间隙（键盘外观）：独立页面
+        findViewById<Button>(R.id.btn_key_appearance).setOnClickListener {
+            startActivity(Intent(this, KeyAppearanceActivity::class.java))
+        }
+        // 模糊音容错：独立全屏页（页面内每组一个勾选框，勾选即落盘并即时生效）。
+        // 入口文案固定，不显示「（N 组）」——用户要的是一句话说明入口，当前勾选进页面看
+        btnFuzzyPinyin = findViewById(R.id.btn_fuzzy_pinyin)
+        btnFuzzyPinyin.text = TEXT_FUZZY_ENTRY
+        btnFuzzyPinyin.setOnClickListener { startActivity(Intent(this, FuzzyPinyinActivity::class.java)) }
+        // 加更多生僻字：同一行的右侧按钮 → 独立全屏页（两档开关，档 3 依赖档 2，勾选即落盘即时生效）
+        findViewById<Button>(R.id.btn_rare_chars).apply {
+            text = TEXT_RARE_ENTRY
+            setOnClickListener { startActivity(Intent(this@SettingsActivity, RareCharsActivity::class.java)) }
+        }
+        // 敲击音效反馈：独占下一行的单按钮入口 → 独立全屏页（音效六组音色 + 震动四档，改动即落盘）
+        findViewById<Button>(R.id.btn_tap_sound).apply {
+            text = TEXT_TAP_SOUND_ENTRY
+            setOnClickListener { startActivity(Intent(this@SettingsActivity, TapSoundActivity::class.java)) }
+        }
+        findViewById<Button>(R.id.btn_clipboard_customize).apply {
+            text = TEXT_CLIPBOARD_CUSTOMIZE_ENTRY
+            setOnClickListener { startActivity(Intent(this@SettingsActivity, ClipboardCustomizeActivity::class.java)) }
+        }
+        // 图库快贴：目录绑定 / 清除绑定 / 自动返回 / 缩略图布局都收在子页面里，这里只留一个入口
+        findViewById<Button>(R.id.btn_gallery_settings).apply {
+            text = TEXT_GALLERY_SETTINGS_ENTRY
+            setOnClickListener {
+                startActivity(Intent(this@SettingsActivity, GallerySettingsActivity::class.java))
+            }
+        }
+        spinnerLanguage.adapter = ArrayAdapter.createFromResource(
+            this, R.array.language_entries, R.layout.item_spinner
+        ).also { it.setDropDownViewResource(R.layout.item_spinner_dropdown) }
+        spinnerDefaultMode.adapter = ArrayAdapter.createFromResource(
+            this, R.array.default_mode_entries, R.layout.item_spinner
+        ).also { it.setDropDownViewResource(R.layout.item_spinner_dropdown) }
+        spinnerDefaultMode.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(
+                parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long,
+            ) {
+                // 初始化 setSelection（以及恢复实例状态）都会回调这里。若此时 prefs 里的值不在
+                // values 中（如配置损坏或新增了模式），indexOf 会退回第 0 项，
+                // 未加保护就会把用户的默认键盘静默改成第 0 项。
+                // 闸门见字段说明（BUG.md L-821）：触摸 / 确认键 / 读屏三条路径都算用户操作。
+                if (!spinnerDefaultMode.userInteracted) return
+                val values = resources.getStringArray(R.array.default_mode_values)
+                val mode = values.getOrNull(position)?.toIntOrNull()
+                    ?: DefaultKeyboardMode.VOICE
+                if (mode != prefs.defaultKeyboardMode) {
+                    prefs.defaultKeyboardMode = mode
+                    Diagnostics.i(TAG, "默认键盘模式: $mode")
+                }
+            }
+
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+        }
+
+        // 输入方案下拉（全局，2026-09-20 起）：全拼 + 七套双拼（共 8 项，语音键盘不在此列）。
+        // 选中即全局生效：选全拼 = 关闭双拼；选某套双拼 = 记住该方案并启用。
+        // 按键面板不再提供「全拼 / 双拼」切换按钮，这里是唯一的输入方案入口。
+        // 列表取自 [ShuangpinScheme.ALL]，与引擎共用同一份数据，不会脱节。
+        spinnerShuangpin.adapter = ArrayAdapter(
+            this, R.layout.item_spinner,
+            ShuangpinScheme.ALL.map { it.displayName },
+        ).also { it.setDropDownViewResource(R.layout.item_spinner_dropdown) }
+        spinnerShuangpin.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(
+                parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long,
+            ) {
+                // 与「默认键盘模式」同一个坑：初始化 setSelection 与恢复实例状态都会回调，
+                // 不挡住就会把用户已选的方案静默改掉（真机上实测被改写过）。
+                if (!spinnerShuangpin.userInteracted) return
+                val scheme = ShuangpinScheme.ALL.getOrNull(position) ?: return
+                prefs.useShuangpin = scheme.isShuangpin
+                // 双拼方案记忆：只在选双拼项时写（选全拼不清记忆，再选回双拼时回到上次那套）
+                if (scheme.isShuangpin) prefs.shuangpinScheme = scheme.prefsValue
+                Diagnostics.i(TAG, "输入方案: ${scheme.displayName}（双拼=${scheme.isShuangpin}）")
+            }
+
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+        }
+
+
+        loadPrefs()
+        // 之后 Spinner 若回调（含恢复实例状态），只有「用户触摸过」才会写配置
+        refreshMicState()
+
+        // 识别选项即时保存：勾选即写入，下次识别立即生效
+        checkStrip.setOnCheckedChangeListener { _, checked ->
+            prefs.stripTrailingPunc = checked
+        }
+        checkComposing.setOnCheckedChangeListener { _, checked ->
+            prefs.useComposing = checked
+        }
+        // 固定 NAS 地址/端口：勾选后编辑框变灰不可编辑
+        checkLockServer.setOnCheckedChangeListener { _, checked ->
+            prefs.lockServer = checked
+            applyServerLock()
+        }
+
+        btnGrant.setOnClickListener { requestMic() }
+        btnEnable.setOnClickListener { startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)) }
+        btnPick.setOnClickListener {
+            val manager = getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager
+            manager?.showInputMethodPicker()
+        }
+        btnSave.setOnClickListener { saveAndRestart() }
+
+        // 自动唤起键盘：勾选即写入，立即生效（JinnIme.onShowInputRequested 每次实时读取）
+        switchAutoShowKeyboard.setOnCheckedChangeListener { _, checked ->
+            prefs.autoShowKeyboard = checked
+            Diagnostics.i(TAG, "自动唤起键盘: ${if (checked) "开启" else "关闭"}")
+        }
+        // 只使用繁体字：拨动即写入并立即生效（引擎侧 setTraditional 只改查询期转换，不需要重启）
+        switchUseTraditional.setOnCheckedChangeListener { _, checked ->
+            prefs.useTraditional = checked
+            PinyinEngine.setTraditional(checked)
+            Diagnostics.i(TAG, "只使用繁体字: ${if (checked) "开启" else "关闭"}（立即生效）")
+        }
+        // 用户词频学习：勾选即写入并立即生效（不需要重启输入法）
+        switchUserLearning.setOnCheckedChangeListener { _, checked ->
+            prefs.userLearning = checked
+            UserFrequency.setEnabled(checked)
+            Diagnostics.i(TAG, "用户词频学习: ${if (checked) "开启" else "关闭"}（立即生效）")
+        }
+        // 候选预测词：勾选即写入；键盘每次要用预测时读 pref，因此立即生效
+        switchPredict.setOnCheckedChangeListener { _, checked ->
+            prefs.predictEnabled = checked
+            Diagnostics.i(TAG, "候选预测词: ${if (checked) "开启" else "关闭"}（立即生效）")
+        }
+
+        // 保活相关（前台服务 / 无障碍互保 / ROOT 白名单 / 电池白名单）已全部移除：
+        // 语音输入改为按需连接后，不再需要进程常驻，也就不需要这些保活手段。
+
+        // 诊断导出：把日志目录打包到共享存储，方便取出排查
+        btnExportDiag.setOnClickListener { exportDiagnostics() }
+
+        // 配置备份：导出 / 导入（跨设备迁移）。按钮文本在代码里下发——strings.xml 默认不改动
+        btnConfigExport = findViewById(R.id.btn_config_export)
+        btnConfigImport = findViewById(R.id.btn_config_import)
+        textConfigHint = findViewById(R.id.text_config_hint)
+        // 导出 / 导入 / 解密的结果都写在这行上：状态会变，读屏要能听见（BUG.md L-1195）
+        textConfigHint.accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+        btnConfigExport.text = TEXT_EXPORT_CONFIG
+        btnConfigImport.text = TEXT_IMPORT_CONFIG
+        textConfigHint.text = TEXT_CONFIG_HINT
+        btnConfigExport.setOnClickListener { showExportConfigDialog() }
+        btnConfigImport.setOnClickListener {
+            // 先禁用再打开选择器：连点会连开两个选择器，第二份结果会覆盖 pendingImportZip 的引用，
+            // 使「取消时删掉明文临时包」的守卫失效（清理只能等下次解锁或启动清扫兜底）
+            btnConfigImport.isEnabled = false
+            importConfigLauncher.launch(ConfigBackupManager.OPEN_MIME_TYPES)
+        }
+        // 上次异常中断留下的明文中间件（导出 zip / 导入临时 zip）在这里补清：
+        // 进程被杀不会跑任何收尾代码，只能等下次进设置页
+        BackgroundIo.run { ConfigBackupManager.cleanupStaleCache(this@SettingsActivity) }
+        // 页面重建期间完成的后台任务（导出/解密/导入）会把结论留在这里，进入页面时补提示
+        pendingNotice?.let { notice ->
+            pendingNotice = null
+            alert("提示", notice)
+        }
+        Diagnostics.currentLogDir?.let {
+            textDiagDir.text = getString(R.string.settings_diag_dir_hint, it.absolutePath)
+        }
+
+    }
+
+
+    /**
+     * 定时换色：`onStart` 里对一次表并排下一次、`onStop` 里撤掉（见 [ThemeManager.ScheduledThemeTicker]）。
+     *
+     * 对表那一下也覆盖「在后台跨过切换点」—— 原先只在 `onCreate` 排一次，后台期间到点的换色要等
+     * 用户重新进页面才补上。
+     */
+    override fun onStart() {
+        super.onStart()
+        themeTicker.start()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        themeTicker.stop()
+    }
+
+    /** 从「键盘外观」页返回时两档皮肤可能已改：这里补一次刷新（本页其余状态不变，无需 recreate） */
+    override fun onResume() {
+        super.onResume()
+
+        // 麦克风状态同理：从系统设置授权后返回，页面不能还显示「未授权」
+        if (::textMicState.isInitialized) refreshMicState()
+        // 翻译设置页返回：状态摘要（已配置 / 未配置）可能已变
+        if (::textTranslateState.isInitialized) refreshTranslateState()
+
+    }
+
+
+
+
+    // 第三方 APP 访问权限管理已移除：规范要求 JinnIme 不提供第三方读取 History API。
+    // 对应 ClipboardPermissionActivity / PermissionStore / Provider 已删除。
+
+    /** 提示行恢复为「日志目录：…」（用户取消导出、未产生结果时用） */
+    private fun resetDiagHint() {
+        Diagnostics.currentLogDir?.let {
+            textDiagDir.text = getString(R.string.settings_diag_dir_hint, it.absolutePath)
+        }
+    }
+
+    /**
+     * 导出诊断包：先在缓存目录打包（零权限），再弹系统文件选择器让用户挑保存位置。
+     *
+     * 打包与写入都走后台线程（SAF 的 OutputStream 可能较慢）；两处都保留 Activity
+     * 销毁守卫，避免操作已 detach 的 view。
+     */
+    private fun exportDiagnostics() {
+        btnExportDiag.isEnabled = false
+        Diagnostics.i(TAG, "exportDiagnostics: 开始打包诊断包")
+        Thread {
+            // 诊断包要打包日志与快照，降后台优先级（BUG.md L-1194）
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+            val file = Diagnostics.exportBundle(this)
+            runOnUiThread {
+                if (isFinishing || isDestroyed) {
+                    // 与配置导出（doExportConfig）同一条兜底：页面被重建时把结论留下，
+                    // 新页面进入时补提示 —— 否则用户点了导出、界面上什么都没发生，
+                    // 只会以为按钮坏了（打包好的临时包留在缓存目录无人认领）
+                    pendingNotice = if (file == null) {
+                        "导出诊断包失败（页面被重建），请重试"
+                    } else {
+                        "诊断包已生成，但页面被重建，请重新点「导出诊断数据」选择保存位置。"
+                    }
+                    return@runOnUiThread
+                }
+                btnExportDiag.isEnabled = true
+                if (file != null) {
+                    pendingDiagZip = file
+                    exportDiagLauncher.launch(file.name)
+                } else {
+                    Diagnostics.w(TAG, "exportDiagnostics: 打包失败")
+                    textDiagDir.text = getString(R.string.settings_diag_export_fail, "日志目录不可读")
+                }
+            }
+        }.apply { isDaemon = true; name = "jinn-diag-export" }.start()
+    }
+
+    /** 把临时诊断包写入用户选定的位置（SAF），写完即删临时文件 */
+    private fun copyDiagZipTo(uri: Uri, src: java.io.File) {
+        // 提示里用自己生成的文件名：部分 provider 的 lastPathSegment 是文档 ID（如 "18"），对用户没有意义
+        val displayName = src.name
+        Thread {
+            // 写入整份包（上限随剪贴板数据走），降后台优先级（BUG.md L-1194）
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+            val ok = runCatching {
+                openTruncatingOutput(uri)?.use { out ->
+                    src.inputStream().use { it.copyTo(out) }
+                } != null
+            }.getOrDefault(false)
+            // 失败时把刚写的半截文件删掉：覆盖写一开始就把目标清空，留下一份 0 字节或截断的文件
+            // 只会让用户误以为是有效产物（配置包拿去导入必然得到「密码错误或文件已损坏」，把排查带偏）
+            if (!ok) runCatching { contentResolver.delete(uri, null, null) }
+            src.delete()
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (ok) {
+                    Diagnostics.i(TAG, "exportDiagnostics: 导出完成 ${safeUriLabel(uri)}")
+                    textDiagDir.text = getString(R.string.settings_diag_exported, displayName)
+                } else {
+                    Diagnostics.w(TAG, "exportDiagnostics: 写入失败")
+                    textDiagDir.text = getString(R.string.settings_diag_export_fail, "写入失败")
+                }
+            }
+        }.apply { isDaemon = true; name = "jinn-diag-copy" }.start()
+    }
+
+    private fun loadPrefs() {
+        editHost.setText(prefs.host)
+        editPort.setText(prefs.port.toString())
+        editPrompt.setText(prefs.prompt)
+        checkStrip.isChecked = prefs.stripTrailingPunc
+        checkComposing.isChecked = prefs.useComposing
+        switchAutoShowKeyboard.isChecked = prefs.autoShowKeyboard
+        bindVoiceInputSwitch()
+        bindTranslateCard()
+
+        switchUseTraditional.isChecked = prefs.useTraditional
+        switchUserLearning.isChecked = prefs.userLearning
+        switchPredict.isChecked = prefs.predictEnabled
+
+        checkLockServer.isChecked = prefs.lockServer
+        applyServerLock()
+        val values = resources.getStringArray(R.array.language_values)
+        spinnerLanguage.setSelection(values.indexOf(prefs.language).coerceAtLeast(0))
+        val modeValues = resources.getStringArray(R.array.default_mode_values)
+        spinnerDefaultMode.setSelection(
+            modeValues.indexOf(prefs.defaultKeyboardMode.toString()).coerceAtLeast(0)
+        )
+        // 输入方案：按当前生效方案定位（全拼状态下选中「26 键全拼」，与全局语义一致）
+        spinnerShuangpin.setSelection(
+            ShuangpinScheme.ALL.indexOf(prefs.effectiveShuangpinScheme).coerceAtLeast(0)
+        )
+        // 候选词行数：档位 1/2 对应下拉下标 0/1（Prefs 已归一，下标必然合法）
+
+    }
+
+    /**
+     * 固定 NAS 地址/端口：勾选后编辑框变灰不可编辑，防误触乱改。
+     * 解锁（取消勾选）后可正常编辑。
+     */
+    /**
+     * 绑定「语音输入」总开关。
+     *
+     * 关闭时语音相关区块（授权麦克风 + NAS 语音）一并隐藏，此时语音在 IME 侧
+     * 完全沉寂（不建实例、不连 WebSocket），这些配置项没有意义，显示出来只会误导。
+     * 开关变更后需重启输入法进程才生效（与设置页其他项一致，由「保存并重启」触发）。
+     */
+    /**
+     * 更新检查状态：只区分「空闲 / 进行中」。
+     *
+     * 结果（有更新 / 已最新 / 网络错误）由对话框呈现，早先预留的
+     * UpToDate / Available / NetworkError 三态从未被任何消费方读取（死状态），已移除。
+     */
+    private enum class UpdateState { Idle, Checking }
+
+    /**
+     * 「本次检查」的序号（BUG.md L-145）：晚到的回调**不得**动界面。
+     *
+     * 看门狗 30s 只是常态余量（网络侧总预算 25s，而预算本身此前管不住滴水响应）——
+     * 一旦某次请求真的超过 30s，看门狗会解锁按钮、用户再点一次；此时**上一次**的回调若照旧
+     * `removeCallbacks` + `setUpdateState(Idle)`，删掉的就是**新那次**的看门狗，并把新请求
+     * 变成「在飞但没有看门狗」：它的回调再丢，按钮就永久停在「检查中…」。
+     */
+    private var checkSeq = 0
+
+    /**
+     * 请求看门狗：网络侧超时 10s，留 5s 余量。
+     *
+     * 不能像早先那样 3s 就无条件熄灯复位：那会让按钮在请求仍在途时重新可用，
+     * `updateState == Checking` 的防重入判据随之失效，用户可并发发起第二次检查并重复弹窗。
+     * 正常情况结果必达（[onUpdateChecked] 负责解锁），看门狗只在回调极端丢失时兜底。
+     */
+    private val updateWatchdogRunnable = Runnable {
+        if (updateState == UpdateState.Checking) {
+            Diagnostics.w(TAG, "检查更新超时未返回，看门狗解锁按钮")
+            setUpdateState(UpdateState.Idle)
+        }
+    }
+
+    /**
+     * 「检查更新」绑定。点击进入 Checking：禁用重复点击并高亮；
+     * 结果由 [UpdateChecker] 回主线程后统一以对话框呈现。
+     * 右侧「打开下载页面」与检查结果无关，直接跳 Gitee 发行版列表。
+     */
+    private fun bindCheckUpdate() {
+        btnCheckUpdate.setOnClickListener {
+            if (updateState == UpdateState.Checking) return@setOnClickListener
+            setUpdateState(UpdateState.Checking)
+            val seq = ++checkSeq
+            UpdateChecker.checkAsync(BuildConfig.VERSION_CODE) { result ->
+                if (seq != checkSeq) {
+                    // 过期结果：只记日志，不解锁、不弹窗（弹了就是「答非所问」的那一次）
+                    Diagnostics.i(TAG, "忽略过期的检查结果（seq=$seq，当前=$checkSeq）")
+                    return@checkAsync
+                }
+                onUpdateChecked(result)
+            }
+        }
+        btnUpdateDownload.setOnClickListener {
+            val url = UpdateChecker.downloadPageUrl()
+            Diagnostics.i(TAG, "打开下载页面: $url")
+            openUrl(url)
+        }
+    }
+
+    /**
+     * 打开设置页时的自动检查：距上次成功检查 ≥7 天才执行一次。
+     *
+     * 只有「检测到新版本」才弹确认框（见 [showAskUpdateDialog]）；失败一律静默
+     * （不弹「网络异常」），「已最新」也只复位按钮状态，不打断用户操作。
+     */
+    private fun maybeAutoCheckUpdate() {
+        val now = System.currentTimeMillis()
+        val last = prefs.updateLastCheckAt
+        if (!UpdateChecker.shouldAutoCheck(last, now)) {
+            Diagnostics.i(TAG, "自动检查更新: 距上次 ${(now - last) / DAY_MS} 天，跳过")
+            return
+        }
+        // 网络与电量门控（MEM-17）：非 WiFi 且未充电时不做后台检查 —— 用户没在等它，
+        // 不该为一次版本检查付流量与唤醒。**不推进 `updateLastCheckAt`**：下次打开设置页还会再判，
+        // 一旦回到 WiFi / 开始充电就补上（推进了就等于把这次检查吞掉）
+        if (!UpdateChecker.autoCheckNetworkOk(this)) {
+            Diagnostics.i(TAG, "自动检查更新: 当前非 WiFi 且未充电，跳过（下次打开设置页再判）")
+            return
+        }
+        // 与手动检查共用状态机：进行中不重入，避免并发请求与重复弹窗
+        if (updateState == UpdateState.Checking) return
+        val since = if (last <= 0L) "从未检查" else "${(now - last) / DAY_MS} 天前"
+        Diagnostics.i(TAG, "自动检查更新: 开始（上次=$since）")
+        setUpdateState(UpdateState.Checking)
+        val seq = ++checkSeq
+        UpdateChecker.checkAsync(BuildConfig.VERSION_CODE) { result ->
+            // 与手动检查同一条纪律（BUG.md L-145）：过期结果不动界面
+            if (seq != checkSeq) {
+                Diagnostics.i(TAG, "忽略过期的自动检查结果（seq=$seq，当前=$checkSeq）")
+                return@checkAsync
+            }
+            onAutoChecked(result)
+        }
+    }
+
+    private fun setUpdateState(state: UpdateState) {
+        updateState = state
+        val checking = state == UpdateState.Checking
+        btnCheckUpdate.isEnabled = !checking
+        btnCheckUpdate.alpha = if (checking) 0.6f else 1f
+        btnCheckUpdate.text = getString(
+            if (checking) R.string.update_checking else R.string.settings_check_update
+        )
+        btnCheckUpdate.removeCallbacks(updateWatchdogRunnable)
+        if (checking) btnCheckUpdate.postDelayed(updateWatchdogRunnable, UPDATE_WATCHDOG_MS)
+    }
+
+    /** 手动检查：结果由三段式对话框呈现（措辞属 unified-update-check 统一，不得改写） */
+    private fun onUpdateChecked(result: UpdateChecker.Result) {
+        btnCheckUpdate.removeCallbacks(updateWatchdogRunnable)
+        // 检查是后台线程 + 10s 网络超时：结果回来时页面可能已关闭或已重建。
+        // 拿已销毁的 Activity 去 show() 会抛 BadTokenException（主线程崩溃）。
+        if (isFinishing || isDestroyed) {
+            Diagnostics.i(TAG, "检查更新结果已到达，但页面已销毁，跳过弹窗")
+            return
+        }
+        // 记账放在守卫之后：弹窗是「发现新版本」唯一的提示出口，页面销毁时它不会出现，
+        // 提前记账等于让用户什么都没看到却被静默七天（L-1047）
+        recordUpdateCheckTime(result)
+        // 结果本身由对话框呈现：这里只需解锁（早先先赋 UpToDate/Available/NetworkError、
+        // 紧接着又被 Idle 覆盖，是没有任何消费方的死代码，已随本次修复移除）。
+        setUpdateState(UpdateState.Idle)
+        showUpdateDialog(result)
+    }
+
+    /** 自动检查：失败/已最新一律静默，只有检测到新版本才弹「有新版本，要更新吗？」 */
+    private fun onAutoChecked(result: UpdateChecker.Result) {
+        btnCheckUpdate.removeCallbacks(updateWatchdogRunnable)
+        if (isFinishing || isDestroyed) {
+            Diagnostics.i(TAG, "自动检查更新结果已到达，但页面已销毁，跳过弹窗")
+            return
+        }
+        // 同上（L-1047）：只有这次结果真被呈现（弹窗或静默结论落日志）才记账，页面销毁时不记
+        recordUpdateCheckTime(result)
+        setUpdateState(UpdateState.Idle)
+        when (result) {
+            is UpdateChecker.Result.Available -> showAskUpdateDialog(result)
+            is UpdateChecker.Result.UpToDate ->
+                Diagnostics.i(
+                    TAG,
+                    "自动检查更新: 已是最新 ${result.latest}（归一 ${UpdateChecker.comparableVersion(result.latest)}，静默）",
+                )
+            UpdateChecker.Result.NetworkError ->
+                Diagnostics.w(TAG, "自动检查更新: 网络异常（静默）")
+        }
+    }
+
+    /**
+     * 记下本次检查时刻，供 7 天节流使用（判据见 [UpdateChecker.shouldAutoCheck]）。
+     *
+     * 只记成功（有更新 / 已最新）：失败不写，下次打开设置页仍会静默重试；成功则在
+     * 间隔内不再自动检查。写入的是 SharedPreferences（apply 异步落盘），不阻塞主线程。
+     */
+    private fun recordUpdateCheckTime(result: UpdateChecker.Result) {
+        if (result is UpdateChecker.Result.NetworkError) return
+        prefs.updateLastCheckAt = System.currentTimeMillis()
+    }
+
+    /** 三类结果统一三套文案，措辞由 unified-update-check 统一，不得改写。 */
+    private fun showUpdateDialog(result: UpdateChecker.Result) {
+        // 展示与比较必须同量纲（BUG.md L-131）：比较走 [UpdateChecker.comparableVersion]，
+        // 文案若仍传 `normalizeTag` 的原始值，标签规范回退到 6 位时会出现
+        // 「你目前的版本：20260929 / 在线最新版本：260930」却提示有更新（数字看着更小）——自相矛盾。
+        val local = getString(R.string.update_local_version, BuildConfig.VERSION_CODE)
+        fun shown(v: Int) = UpdateChecker.comparableVersion(v)
+        val builder = AlertDialog.Builder(this)
+        when (result) {
+            is UpdateChecker.Result.Available -> builder
+                .setTitle(R.string.update_title_available)
+                .setMessage(
+                    local + "\n" + getString(R.string.update_latest_version, shown(result.latest))
+                )
+                .setNegativeButton(R.string.update_btn_later, null)
+                .setPositiveButton(R.string.update_btn_go) { _, _ ->
+                    openUrl(UpdateChecker.releasesUrl(result.latest, result.source, result.tag))
+                }
+
+            is UpdateChecker.Result.UpToDate -> builder
+                .setTitle(R.string.update_title_prompt)
+                .setMessage(
+                    local + "\n" +
+                        getString(R.string.update_latest_version, shown(result.latest)) + "\n" +
+                        getString(R.string.update_uptodate)
+                )
+                .setPositiveButton(R.string.update_btn_ok, null)
+
+            UpdateChecker.Result.NetworkError -> builder
+                .setTitle(R.string.update_title_prompt)
+                .setMessage(local + "\n" + getString(R.string.update_latest_unreachable))
+                .setPositiveButton(R.string.update_btn_ok, null)
+        }
+        showTipDialog(builder.create())
+    }
+
+    /**
+     * 自动检查发现新版本时的确认框：一个问句 + 「不要」/「去更新」。
+     *
+     * 与手动检查的三段式对话框分开：后者措辞属 unified-update-check 统一（不得改写），
+     * 本对话框只服务「打开设置页自动检查」这条路径。
+     */
+    private fun showAskUpdateDialog(result: UpdateChecker.Result.Available) {
+        showTipDialog(
+            AlertDialog.Builder(this)
+                .setTitle(R.string.update_title_prompt)
+                .setMessage(R.string.update_ask_message)
+                .setNegativeButton(R.string.update_btn_no, null)
+                .setPositiveButton(R.string.update_btn_go) { _, _ ->
+                    openUrl(UpdateChecker.releasesUrl(result.latest, result.source, result.tag))
+                }
+                .create()
+        )
+    }
+
+    private fun openUrl(url: String) {
+        runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+            .onFailure { Diagnostics.w(TAG, "打开更新页失败: ${it.message}") }
+    }
+
+    private fun bindVoiceInputSwitch() {
+        val enabled = prefs.voiceInputEnabled
+        switchVoiceInput.isChecked = enabled
+        applyVoiceBlocksVisibility(enabled)
+        switchVoiceInput.setOnCheckedChangeListener { _, checked ->
+            applyVoiceBlocksVisibility(checked)
+        }
+    }
+
+    private fun applyVoiceBlocksVisibility(voiceEnabled: Boolean) {
+        val visibility = if (voiceEnabled) View.VISIBLE else View.GONE
+        cardMicPermission.visibility = visibility
+        cardVoiceServer.visibility = visibility
+    }
+
+    /**
+     * 翻译卡片：开关写 [Prefs.translateEnabled]（键盘功能面板据此决定是否显示「翻译」键，
+     * 收起键盘再弹出即生效，不需要重启）；状态摘要只说「已配置 / 未配置」，
+     * 不回显任何凭据字符（凭据本身在翻译设置页里可见可改）。
+     */
+    private fun bindTranslateCard() {
+        switchTranslate.isChecked = prefs.translateEnabled
+        switchTranslate.setOnCheckedChangeListener { _, checked ->
+            prefs.translateEnabled = checked
+            Diagnostics.i(TAG, "翻译功能: $checked")
+        }
+        refreshTranslateState()
+    }
+
+    private fun refreshTranslateState() {
+        val provider = TranslationProviderId.of(prefs.translateProvider)
+        // ⚠ 用「不可用成因」而不是 `translationProvider() != null`（2026-10-03 修复 L-815）：
+        // ① `null` 不再区分「没填凭据」与「端点不是 https」，摘要必须分因，否则 http 端点用户
+        //    会去反复检查已经填好的 Key 与模型名；② 顺带**省掉一次 provider 组装**（那会解密凭据）。
+        val reason = prefs.translateNotReadyReason()
+        // 目标语言按 Provider 取：OpenAI 兼容用的是**它自己那套**（配置页里选，12 项预设 + 自定义），
+        // 显示 translateTarget 会是一个永远不生效的死值（2026-09-30 审查发现 —— 用户改了
+        // 本页的下拉、摘要却报另一套语言，指向与实际行为不符）
+        val targetLabel = if (provider == TranslationProviderId.OPENAI) {
+            prefs.openAiTargetLanguage
+        } else {
+            TranslationLanguage.of(prefs.translateTarget).label
+        }
+        textTranslateState.text = when {
+            reason == Prefs.TranslateNotReady.NONE -> "已配置：${provider.label} · 目标 $targetLabel"
+            // 端点不合格：用户该改的是 Base URL，不是凭据 —— 文案与键盘 toast 同一处定义（L-816）
+            reason == Prefs.TranslateNotReady.ENDPOINT ->
+                "${provider.label}：${TranslationError.INSECURE.message}"
+            else -> "未配置：点「翻译设置」填写 ${provider.label} 凭据"
+        }
+    }
+
+    private fun applyServerLock() {
+        val locked = checkLockServer.isChecked
+        editHost.isEnabled = !locked
+        editPort.isEnabled = !locked
+        // 置灰效果：enabled=false 时系统自动降低文字/背景透明度，
+        // 再配合降低背景 alpha 让灰色更明显
+        editHost.alpha = if (locked) 0.5f else 1f
+        editPort.alpha = if (locked) 0.5f else 1f
+        Diagnostics.i(TAG, "服务器配置固定: $locked")
+    }
+
+    private fun readLanguage(): String {
+        // 用户没碰过就沿用 Prefs 的原值：导入的备份可能带本版不认识的取值（更高版本 / 手工构造），
+        // 此时 loadPrefs 里 indexOf 退回选中第 0 项，读回它等于把导入的语言静默改写。
+        // 与另外四个 Spinner 同一条闸门（判据见字段说明 / [UserAwareSpinner]，BUG.md L-821）。
+        if (!spinnerLanguage.userInteracted) return prefs.language
+        val values = resources.getStringArray(R.array.language_values)
+        val pos = spinnerLanguage.selectedItemPosition.coerceIn(0, values.lastIndex)
+        return values[pos]
+    }
+
+    // ── 麦克风授权 ──────────────────────────────────────────────
+
+    private fun requestMic() {
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            refreshMicState()
+            return
+        }
+        // 已请求过仍未授予（弹窗不会再出现）或已确认永久拒绝 → 只能去应用详情页手动开
+        if (micRequested || micDeniedForever) {
+            openAppPermissionSettings()
+            return
+        }
+        micRequested = true
+        micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+    }
+
+    /** 跳系统应用详情页：永久拒绝后唯一能重新授权麦克风的地方 */
+    private fun openAppPermissionSettings() {
+        runCatching {
+            startActivity(
+                Intent(
+                    android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    android.net.Uri.fromParts("package", packageName, null),
+                )
+            )
+        }.onFailure { Diagnostics.w(TAG, "打开应用详情页失败: ${it.message}") }
+    }
+
+    private fun refreshMicState() {
+        val granted = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        // 点过一次仍未授权时按钮改为「前往系统设置」：本页再申请不会弹窗，只能去应用详情页手动开
+        val text = getString(
+            when {
+                granted -> R.string.settings_mic_granted
+                micRequested || micDeniedForever -> R.string.settings_mic_open_settings
+                else -> R.string.settings_grant_mic
+            }
+        )
+        textMicState.text = text
+        btnGrant.text = text
+        btnGrant.isEnabled = !granted
+    }
+
+    // ── 保存并重启输入法进程 ──────────────────────────────────────────
+
+    /**
+     * 保存全部永久配置并重启输入法进程：写入 SharedPreferences 后杀掉本进程，
+     * 系统会自动重建 IME 服务按新配置初始化（连接、键盘方案、剪贴板、保活全部重载）。
+     * 比发广播刷新更彻底，等价于「设置保存 + 输入法进程重启」。
+     */
+    private fun saveAndRestart() {
+        val host = editHost.text.toString().trim()
+        val port = editPort.text.toString().trim().toIntOrNull()
+
+        // 语音关闭时 host/port 字段是隐藏的，校验没有意义且会阻塞保存
+        val voiceEnabled = switchVoiceInput.isChecked
+        if (voiceEnabled) {
+            if (host.isBlank()) {
+                Diagnostics.w(TAG, "saveAndRestart: host 为空")
+                editHost.error = getString(R.string.settings_invalid_host)
+                return
+            }
+            // 非法 host 会被拼成 HttpUrl 拒绝的地址，进而在主线程抛异常把 IME 打崩；
+            // 这里拦在保存入口，配合 Prefs 的兜底形成两道防线（语音链路不改动，不能在那里兜）。
+            if (!Prefs.isValidHost(host)) {
+                Diagnostics.w(TAG, "saveAndRestart: host 含非法字符，已拒绝保存")
+                editHost.error = getString(R.string.settings_invalid_host)
+                return
+            }
+            if (port == null || port !in 1..65535) {
+                Diagnostics.w(TAG, "saveAndRestart: 端口非法 port=$port")
+                editPort.error = getString(R.string.settings_invalid_port)
+                return
+            }
+        }
+
+        prefs.voiceInputEnabled = voiceEnabled
+        prefs.host = host
+        // 语音关闭时上面的校验被跳过，port 可能为 null，退回默认端口
+        prefs.port = port ?: Prefs.DEFAULT_PORT
+        prefs.language = readLanguage()
+        prefs.prompt = editPrompt.text.toString()
+        prefs.stripTrailingPunc = checkStrip.isChecked
+        prefs.useComposing = checkComposing.isChecked
+
+
+        // 提示词是用户自己写的正文（可能含个人信息），只记长度不记内容
+        Diagnostics.i(TAG, "saveAndRestart: 配置已保存 host=$host port=$port lang=${prefs.language} promptLen=${prefs.prompt.length}")
+        textTest.setText(R.string.settings_restarting)
+
+        // SharedPreferences apply 异步落盘：延迟片刻等落盘完成再杀进程，
+        // 系统随后自动重启 IME 服务加载新配置，本 Activity 随进程一并结束。
+        // 走 restartImeProcess() 而不是在这里再写一遍延时杀进程：那条路径会先 flush()
+        // 确认落盘，只赌 800ms 在 IO 抖动时会把最后一批设置丢掉（表现为重启后设置回退）。
+        restartImeProcess()
+    }
+
+    private fun toast(resId: Int) {
+        Toast.makeText(this, resId, Toast.LENGTH_SHORT).show()
+    }
+
+    override fun onDestroy() {
+        // 检查更新的看门狗同理：它挂在按钮上，页面销毁后仍会跑一次并回头改按钮状态
+        btnCheckUpdate.removeCallbacks(updateWatchdogRunnable)
+        // 进度框不能随页面销毁留下（WindowLeaked）；后台任务回来时另有 isFinishing 守卫兜底
+        dismissBusy()
+        // 三个配置流程对话框同理：它们是代码创建的，旋转重建时不会自动恢复
+        exportDialog?.dismiss()
+        exportDialog = null
+        importPwdDialog?.dismiss()
+        importPwdDialog = null
+        importConfirmDialog?.dismiss()
+        importConfirmDialog = null
+        // 提示类框（更新提示 / 结果提示 / 时间选择器）同一套道理
+        tipDialog?.dismiss()
+        tipDialog = null
+        // 明文临时包不跨页面生命周期：页面销毁（含旋转重建）时一并清掉。
+        // 但导入正在进行时不能删——后台线程还要按节重开它；这种残留由下次进设置页的清扫兜底
+        if (!importInFlight) {
+            pendingImportZip?.let {
+                it.delete()
+                ConfigBackupManager.releaseUnlockedTemp(it)
+            }
+            pendingImportZip = null
+        }
+        Diagnostics.i(TAG, "onDestroy: 设置页销毁")
+        super.onDestroy()
+    }
+
+    // ── 配置备份：导出 / 导入 ────────────────────────────────
+
+    /**
+     * 导出前的选项对话框：剪贴板明文默认不勾（隐私），词库默认勾（换省事），
+     * 外加两次密码输入 —— 整包加密，密码只能用汉字且本机不保存。
+     */
+    private fun showExportConfigDialog() {
+        val cbClipboard = CheckBox(this).apply {
+            text = TEXT_INCLUDE_CLIPBOARD
+            isChecked = false
+        }
+        val cbDicts = CheckBox(this).apply {
+            text = TEXT_INCLUDE_DICTS
+            isChecked = true
+        }
+        val pwd1 = plainTextField(TEXT_PWD_HINT)
+        val pwd2 = plainTextField(TEXT_PWD_HINT_CONFIRM)
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpOf(20), dpOf(4), dpOf(20), dpOf(4))
+            addView(
+                TextView(this@SettingsActivity).apply {
+                    text = TEXT_EXPORT_DESC
+                    textSize = 13f
+                }
+            )
+            addView(pwd1, lpOf(10))
+            addView(pwd2, lpOf(6))
+            addView(cbClipboard, lpOf(10))
+            addView(cbDicts, lpOf(2))
+        }
+        val dialog = securePasswordDialog(
+            AlertDialog.Builder(this)
+                .setTitle(TEXT_EXPORT_CONFIG)
+                .setView(box)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("开始导出", null)
+                .create(),
+        )
+        dialog.show()
+        exportDialog = dialog
+        // 自校验不过时必须让对话框留在原地（默认 positive 会先 dismiss 再回调，密码就白输了）
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val p1 = pwd1.text.toString()
+            val p2 = pwd2.text.toString()
+            val check = ConfigCrypto.validatePassword(p1)
+            when {
+                // 同时给「输入框红字」与「Toast」：EditText 的 error 气泡几秒就消失，
+                // 慢机 + 亮屏下很容易被当成「点了没反应」
+                check is ConfigCrypto.PasswordCheck.Invalid -> {
+                    pwd1.error = check.reason
+                    Toast.makeText(this, check.reason, Toast.LENGTH_LONG).show()
+                }
+                p1 != p2 -> {
+                    pwd2.error = TEXT_PWD_MISMATCH
+                    Toast.makeText(this, TEXT_PWD_MISMATCH, Toast.LENGTH_LONG).show()
+                }
+                else -> {
+                    dialog.dismiss()
+                    doExportConfig(cbClipboard.isChecked, cbDicts.isChecked, p1)
+                }
+            }
+        }
+    }
+
+    private fun doExportConfig(includeClipboard: Boolean, includeDicts: Boolean, password: String) {
+        btnConfigExport.isEnabled = false
+        textConfigHint.text = TEXT_EXPORTING
+        showBusy(TEXT_BUSY_EXPORT)
+        Diagnostics.i(TAG, "exportConfig: 开始打包并加密（剪贴板=$includeClipboard 词库=$includeDicts）")
+        // 密码以 CharArray 传进加解密层，用完立刻清零；全程不写日志、不落盘
+        val chars = password.toCharArray()
+        Thread {
+            // 配置导出要打 zip + AES-GCM，降后台优先级（BUG.md L-1194）
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+            // 兜底：导出链路上还有 SQLite 与文件 IO（剪贴板分页、词库摘要），漏网异常会连带
+            // 杀死同进程的输入法（设置页与 IME 同进程），所以这里必须整体包住
+            val outcome = runCatching {
+                ConfigBackupManager.export(
+                    this@SettingsActivity,
+                    ConfigBackupManager.ExportOptions(includeClipboard, includeDicts, chars),
+                )
+            }.onFailure {
+                Diagnostics.w(TAG, "exportConfig: 打包异常 ${it.javaClass.simpleName}")
+            }.getOrNull()
+            chars.fill('\u0000')
+            runOnUiThread {
+                if (isFinishing || isDestroyed) {
+                    // 页面已销毁：把结论留下，重建后补提示（否则用户不知道这次导出到底成没成）
+                    pendingNotice = if (outcome == null) {
+                        ConfigBackupManager.lastError ?: TEXT_EXPORT_FAIL
+                    } else {
+                        "配置包已生成，但页面被重建，请重新点「导出配置」选择保存位置。"
+                    }
+                    return@runOnUiThread
+                }
+                dismissBusy()
+                btnConfigExport.isEnabled = true
+                if (outcome == null) {
+                    // 具体原因由 Manager 记在 lastError（如「剪贴板历史过大」），比通用文案有用得多
+                    val reason = ConfigBackupManager.lastError ?: TEXT_EXPORT_FAIL
+                    Diagnostics.w(TAG, "exportConfig: 打包或加密失败（$reason）")
+                    textConfigHint.text = reason
+                    alert(TEXT_EXPORT_CONFIG, reason)
+                } else {
+                    pendingConfigZip = outcome.file
+                    val extra = buildString {
+                        if (outcome.clipDropped > 0) {
+                            append("（剪贴板 ${outcome.clipDropped} 条因超限/超预算未导出）")
+                        }
+                        // 导出期间库一直在变、重试已耗尽：包完整可用，但这一份视图可能少了刚落库的条目。
+                        // 不许静默报「全部导出成功」（BUG-13）。
+                        if (outcome.clipUnstable) {
+                            append("（导出期间剪贴板持续变化，本次快照可能不完整；如需完整备份请稍后重试）")
+                        }
+                    }
+                    textConfigHint.text = "已生成加密备份包，请选择保存位置$extra"
+                    exportConfigLauncher.launch(outcome.file.name)
+                }
+            }
+        }.apply { isDaemon = true; name = "jinn-config-export" }.start()
+    }
+
+    /**
+     * 以「截断写」打开 SAF 输出流。
+     *
+     * 必须带 `"wt"`：默认的 `"w"` 在部分 provider（云盘/文档型）上不保证截断，覆盖一个更大的
+     * 旧文件时会在尾部留下残骸 —— 用户看到的是「密码错误或文件已损坏」这种完全误导的提示。
+     * 少数 provider 不认 `"wt"`，退回默认 mode（行为与从前一致，不会更差）。
+     */
+    private fun openTruncatingOutput(uri: Uri): java.io.OutputStream? =
+        runCatching { contentResolver.openOutputStream(uri, "wt") }.getOrNull()
+            ?: runCatching { contentResolver.openOutputStream(uri) }.getOrNull()
+
+    /**
+     * 只保留 `scheme://authority` 的 URI 标签。
+     *
+     * 完整 uri 可能带账号/目录名（`content://com.xxx.docs/某目录/...`），而日志与诊断包正是
+     * 用户拿去求助、可能上传的东西 —— 不该把这类信息写进去。
+     */
+    private fun safeUriLabel(uri: Uri): String = "${uri.scheme ?: "?"}://${uri.authority ?: "?"}"
+
+    /** 把临时配置包写入用户选定的位置（SAF），写完即删临时文件 */
+    private fun copyConfigZipTo(uri: Uri, src: java.io.File) {
+        val displayName = src.name
+        showBusy(TEXT_BUSY_WRITE)
+        Thread {
+            // 写入整份包（上限随剪贴板数据走），降后台优先级（BUG.md L-1194）
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+            val ok = runCatching {
+                openTruncatingOutput(uri)?.use { out ->
+                    src.inputStream().use { it.copyTo(out) }
+                } != null
+            }.getOrDefault(false)
+            // 失败时把刚写的半截文件删掉：覆盖写一开始就把目标清空，留下一份 0 字节或截断的文件
+            // 只会让用户误以为是有效产物（配置包拿去导入必然得到「密码错误或文件已损坏」，把排查带偏）
+            if (!ok) runCatching { contentResolver.delete(uri, null, null) }
+            src.delete()
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                dismissBusy()
+                if (ok) {
+                    Diagnostics.i(TAG, "exportConfig: 导出完成 ${safeUriLabel(uri)}")
+                    textConfigHint.text = "配置已导出：$displayName"
+                    alert(TEXT_EXPORT_CONFIG, "已导出：$displayName\n\n请妥善保管该文件与密码：忘记密码无法解密。")
+                } else {
+                    Diagnostics.w(TAG, "exportConfig: 写入失败")
+                    textConfigHint.text = TEXT_EXPORT_FAIL
+                    // 覆盖写会一开始就把目标截断：失败时用户的原文件可能已经空了，必须提示到
+                    alert(
+                        TEXT_EXPORT_CONFIG,
+                        "$TEXT_EXPORT_FAIL\n\n若您选择的是已存在的文件，该文件可能已被清空，请重新导出一次。",
+                    )
+                }
+            }
+        }.apply { isDaemon = true; name = "jinn-config-copy" }.start()
+    }
+
+    /**
+     * 给**含密码输入框**的对话框加防截屏 / 录屏 / 投屏 / 最近任务缩略图标志（2026-10-04 修复 L-588）。
+     *
+     * 为什么加在对话框窗口、而不是整个设置页：`FLAG_SECURE` 是**按窗口**生效的，而本页只有
+     * 「导出配置 / 导入配置」两个密码框是机密（其余是 host / port、提示词这类非机密配置）。
+     * 整页加会把「设置页截图」一并废掉（真机排查与用户留证都要用），对密码框却没有任何额外收益。
+     * ⚠ 投屏（ADB / scrcpy）下对话框内容不可见是**预期行为**，不是缺陷。
+     */
+    private fun securePasswordDialog(dialog: AlertDialog): AlertDialog = dialog.apply {
+        window?.setFlags(
+            android.view.WindowManager.LayoutParams.FLAG_SECURE,
+            android.view.WindowManager.LayoutParams.FLAG_SECURE,
+        )
+    }
+
+    /**
+     * 导入第一步：先审密码（明文输入框，刻意不触发系统安全键盘）。
+     *
+     * 备份整包加密，密码不对就什么都拿不到（连包里的设备信息也看不到），
+     * 所以密码必须在最前面 —— 这是「配置 / 剪贴板过于敏感」的第一道门。
+     */
+    private fun askImportPassword(uri: Uri) {
+        val pwd = plainTextField(TEXT_PWD_HINT)
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpOf(20), dpOf(4), dpOf(20), dpOf(4))
+            addView(
+                TextView(this@SettingsActivity).apply {
+                    text = TEXT_IMPORT_PWD_DESC
+                    textSize = 13f
+                }
+            )
+            addView(pwd, lpOf(10))
+        }
+        val dialog = securePasswordDialog(
+            AlertDialog.Builder(this)
+                .setTitle(TEXT_IMPORT_PWD_TITLE)
+                .setView(box)
+                .setNegativeButton("取消") { _, _ ->
+                    // 取消要复位入口按钮并给出反馈，否则提示行会停在上一次的失败文案上（误导）
+                    btnConfigImport.isEnabled = true
+                    textConfigHint.text = TEXT_IMPORT_CANCELED
+                }
+                .setPositiveButton("解密", null)
+                .create(),
+        )
+        dialog.show()
+        importPwdDialog = dialog
+        // 返回键 / 点对话框外面也要复位入口按钮：这两种取消不会触发 negative 回调，
+        // 漏掉的话按钮会永久停在禁用态、提示行永久停在「正在解密…」
+        dialog.setOnCancelListener {
+            btnConfigImport.isEnabled = true
+            textConfigHint.text = TEXT_IMPORT_CANCELED
+        }
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val value = pwd.text.toString()
+            val check = ConfigCrypto.validatePassword(value)
+            if (check is ConfigCrypto.PasswordCheck.Invalid) {
+                pwd.error = check.reason
+                Toast.makeText(this, check.reason, Toast.LENGTH_LONG).show()
+            } else {
+                dialog.dismiss()
+                unlockConfigBackup(uri, value)
+            }
+        }
+    }
+
+    /** 解密（PBKDF2 很慢，必须在后台线程）→ 成功后弹清单确认框，失败给出可重试的弹框 */
+    private fun unlockConfigBackup(uri: Uri, password: String) {
+        btnConfigImport.isEnabled = false
+        textConfigHint.text = TEXT_DECRYPTING
+        showBusy(TEXT_BUSY_DECRYPT)
+        val chars = password.toCharArray()
+        Thread {
+            // 解包 + 解锁是重活，降后台优先级（BUG.md L-1194）
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+            val result = runCatching { ConfigBackupManager.unlock(this@SettingsActivity, uri, chars) }
+                .onFailure { Diagnostics.w(TAG, "importConfig: 解锁异常 ${it.javaClass.simpleName}") }
+                .getOrElse { ConfigBackupManager.UnlockResult.ReadFailed }
+            chars.fill('\u0000')
+            val zip = (result as? ConfigBackupManager.UnlockResult.Ok)?.zip
+            val info = zip?.let { runCatching { ConfigBackupManager.inspect(it) }.getOrNull() }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) {
+                    zip?.let {
+                        it.delete()
+                        ConfigBackupManager.releaseUnlockedTemp(it)
+                    }
+                    pendingNotice = "已通过密码校验，但页面被重建；请重新点「导入配置」。"
+                    return@runOnUiThread
+                }
+                dismissBusy()
+                btnConfigImport.isEnabled = true
+                when {
+                    // 「读不到」与「解不开」必须分开提示：把文件被移走/授权失效说成密码错，
+                    // 用户会反复重输密码，而真正的原因在别处
+                    result is ConfigBackupManager.UnlockResult.ReadFailed -> {
+                        Diagnostics.w(TAG, "importConfig: 无法读取所选文件")
+                        textConfigHint.text = TEXT_READ_FAIL
+                        alert(TEXT_IMPORT_CONFIG, TEXT_READ_FAIL)
+                    }
+                    result is ConfigBackupManager.UnlockResult.ReadTimeout -> {
+                        Diagnostics.w(TAG, "importConfig: 读取备份文件超时")
+                        textConfigHint.text = TEXT_READ_TIMEOUT
+                        alert(TEXT_IMPORT_CONFIG, TEXT_READ_TIMEOUT)
+                    }
+                    zip == null -> {
+                        Diagnostics.w(TAG, "importConfig: 解密失败")
+                        textConfigHint.text = TEXT_DECRYPT_FAIL
+                        // 失败必须有明确弹框（原来只改一行小灰字，用户看不到会以为整个流程坏了），
+                        // 并给一个「重新输入密码」的直达入口，免得再从文件选择器走一遍
+                        alert(TEXT_IMPORT_PWD_TITLE, TEXT_DECRYPT_FAIL) { askImportPassword(uri) }
+                    }
+                    info == null -> {
+                        // 已解密但清单不可识别（manifest 骨架不符）：密码是对的，引导重输只会让人怀疑自己
+                        zip.delete()
+                        Diagnostics.w(TAG, "importConfig: 包格式无法识别")
+                        textConfigHint.text = TEXT_FORMAT_UNKNOWN
+                        alert(TEXT_IMPORT_CONFIG, TEXT_FORMAT_UNKNOWN)
+                    }
+                    else -> {
+                        pendingImportZip = zip
+                        showImportConfigDialog(zip, info)
+                    }
+                }
+            }
+        }.apply { isDaemon = true; name = "jinn-config-unlock" }.start()
+    }
+
+    private fun showImportConfigDialog(zip: java.io.File, info: ConfigBackupManager.BackupInfo) {
+        val time = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US)
+            .format(java.util.Date(info.manifest.createdAt))
+        val hasClipboard = info.clipCount > 0
+        val hasDicts = info.dictNames.isNotEmpty()
+
+        val group = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
+        val rbRestore = RadioButton(this).apply {
+            id = View.generateViewId()
+            text = TEXT_MODE_RESTORE
+        }
+        val rbMerge = RadioButton(this).apply {
+            id = View.generateViewId()
+            text = TEXT_MODE_MERGE
+            isChecked = true
+        }
+        group.addView(rbRestore)
+        group.addView(rbMerge)
+        val cbClipboard = CheckBox(this).apply {
+            text = "导入剪贴板历史（${info.clipCount} 条）"
+            isChecked = hasClipboard
+            isEnabled = hasClipboard
+        }
+        val cbDicts = CheckBox(this).apply {
+            text = "导入已下载词库（${info.dictNames.size} 个）"
+            isChecked = hasDicts
+            isEnabled = hasDicts
+        }
+        val summary = buildString {
+            append("备份时间：").append(time).append('\n')
+            append("来源版本：").append(info.manifest.appVersionCode)
+            append("（本机 ").append(BuildConfig.VERSION_CODE).append("）\n")
+            append("来源设备：").append(info.manifest.device).append('\n')
+            append("包含：设置 ").append(info.prefsKeys).append(" 项、词频 ")
+                .append(info.freqCount).append(" 条、剪贴板 ")
+                .append(info.clipCount).append(" 条、词库 ")
+                .append(info.dictNames.size).append(" 个")
+            // 端点类设置也在「设置项」里（语音服务地址、OpenAI 兼容 Base URL / Chat Path 等）：
+            // 「覆盖还原」会用包里的值覆盖本机，而翻译请求会把**本机已有的凭据与光标前的正文**发往
+            // 那个地址 —— 包若来自不可信来源，等于把 Key 交出去（2026-09-30 审查）。
+            // 这里明说，不让它藏在「设置 N 项」这个计数后面。
+            append("\n\n提示：选「覆盖还原」时，包内的服务端地址与自定义端点（语音服务地址、")
+            append("OpenAI 兼容 Base URL 等）会覆盖本机 —— 请确认备份来源可信。")
+            if (info.tooNew) append("\n\n该备份由更新版本的 App 生成，本机版本无法导入。")
+            if (info.hasOversized) {
+                append("\n\n包内的 ").append(info.oversizedSections.joinToString("、"))
+                    .append(" 超过单节读入上限或无法读取，导入会被拒绝（通常是包被手工改过）。")
+            }
+        }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpOf(20), dpOf(4), dpOf(20), dpOf(4))
+            addView(
+                TextView(this@SettingsActivity).apply {
+                    text = summary
+                    textSize = 13f
+                }
+            )
+            addView(group, lpOf(8))
+            addView(cbClipboard, lpOf(4))
+            addView(cbDicts, lpOf(2))
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(TEXT_IMPORT_CONFIG)
+            .setView(box)
+            .setNegativeButton("取消") { _, _ ->
+                // 取消也要删掉明文临时 zip，不让它在缓存里留着；同时注销在册登记（L-1086）
+                if (pendingImportZip === zip) pendingImportZip = null
+                zip.delete()
+                ConfigBackupManager.releaseUnlockedTemp(zip)
+                textConfigHint.text = TEXT_IMPORT_CANCELED
+            }
+            .setPositiveButton("开始导入") { _, _ ->
+                doImportConfig(
+                    zip = zip,
+                    mode = if (rbRestore.isChecked) {
+                        ConfigBackupManager.ImportMode.RESTORE
+                    } else {
+                        ConfigBackupManager.ImportMode.MERGE_DATA
+                    },
+                    includeClipboard = cbClipboard.isChecked,
+                    includeDicts = cbDicts.isChecked,
+                )
+            }
+            .create()
+        dialog.show()
+        importConfirmDialog = dialog
+        // 返回键、点到对话框外面都走 cancel（**不会**触发 negative 按钮的点击回调）：
+        // 明文临时 zip 必须在这里也删掉，否则它会一直留在缓存目录里
+        dialog.setOnCancelListener {
+            if (pendingImportZip === zip) pendingImportZip = null
+            zip.delete()
+            ConfigBackupManager.releaseUnlockedTemp(zip)
+            // 与 negative 一致：否则提示行会永久停在上一句「正在解密…」
+            textConfigHint.text = TEXT_IMPORT_CANCELED
+        }
+        // 两种情况都只允许查看清单：包由更新版生成，或包内有过大的节（导入端必然拒绝，
+        // 提前禁用能省掉一次「输完密码才失败」）
+        if (info.tooNew || info.hasOversized) dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = false
+    }
+
+    private fun doImportConfig(
+        zip: java.io.File,
+        mode: ConfigBackupManager.ImportMode,
+        includeClipboard: Boolean,
+        includeDicts: Boolean,
+    ) {
+        // 页面重建后按钮会重新可点，而上一轮的导入线程可能还在跑：进程级标记拦下这种重入
+        if (ConfigBackupManager.importing) {
+            textConfigHint.text = TEXT_IMPORTING
+            alert(TEXT_IMPORT_CONFIG, TEXT_IMPORTING)
+            return
+        }
+        btnConfigImport.isEnabled = false
+        textConfigHint.text = TEXT_IMPORTING
+        showBusy(TEXT_BUSY_IMPORT)
+        // 标记进行中：此时 onDestroy 不能删明文 zip（后台线程还要读它）
+        importInFlight = true
+        Thread {
+            // 配置导入要写库 / 词频 / prefs，降后台优先级（BUG.md L-1194）
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+            // 兜底：导入会写 SQLite / 词频 / prefs，任一处漏网异常都会连带杀死同进程的输入法
+            val r = runCatching {
+                ConfigBackupManager.import(
+                    this@SettingsActivity, zip, mode, includeClipboard, includeDicts,
+                )
+            }.onFailure {
+                Diagnostics.w(TAG, "importConfig: 导入异常 ${it.javaClass.simpleName}")
+            }.getOrNull()
+            // 明文临时 zip 用完即删（成功失败都删）：它是本次导入唯一的明文副本
+            zip.delete()
+            if (pendingImportZip === zip) pendingImportZip = null
+            importInFlight = false
+            runOnUiThread {
+                if (isFinishing || isDestroyed) {
+                    // 最危险的一种：导入其实已经落盘，用户却什么都没看到，多半会以为失败再导一次
+                    pendingNotice = if (r == null) {
+                        ConfigBackupManager.lastImportError ?: TEXT_IMPORT_FAIL
+                    } else {
+                        "配置导入已完成（写入的设置与词库需重启输入法后生效）。"
+                    }
+                    return@runOnUiThread
+                }
+                dismissBusy()
+                btnConfigImport.isEnabled = true
+                if (r == null) {
+                    // 具体原因由 Manager 记在 lastImportError（如「词库正在写入，请稍后重试」），比通用文案有用
+                    val reason = ConfigBackupManager.lastImportError ?: TEXT_IMPORT_FAIL
+                    Diagnostics.w(TAG, "importConfig: 导入失败（$reason）")
+                    textConfigHint.text = reason
+                    alert(TEXT_IMPORT_CONFIG, reason)
+                    return@runOnUiThread
+                }
+                // 设置已落盘：先把「即时生效」的那几项同步给引擎，再走下面的「需重启」提示
+                // （用户点「稍后」时，繁体 / 档位 / 模糊音 / 学习这些不必等重启就该生效）
+                syncImmediateSettings()
+                val parts = ArrayList<String>()
+                if (mode == ConfigBackupManager.ImportMode.RESTORE) parts.add("设置 ${r.prefsApplied} 项")
+                parts.add("词频 ${r.freqBefore}→${r.freqAfter} 条")
+                if (includeClipboard) parts.add("剪贴板 +${r.clipAdded} 条")
+                if (includeDicts) parts.add("词库 +${r.dictsWritten} 个")
+                // 静默失败是最坏的一类问题：被忽略/跳过的数量必须让用户看见
+                if (r.prefsIgnored > 0) parts.add("忽略 ${r.prefsIgnored} 项")
+                if (includeClipboard && r.clipSkipped > 0) parts.add("剪贴板跳过 ${r.clipSkipped} 条")
+                if (includeDicts && r.dictsSkipped > 0) parts.add("词库跳过 ${r.dictsSkipped} 个")
+                // 部分完成必须如实说：前面的阶段已落盘且不回滚，重试是幂等的
+                if (r.failedStage != null) parts.add("${r.failedStage}（可重试）")
+                val summary = parts.joinToString("、")
+                textConfigHint.text =
+                    if (r.failedStage == null) "导入完成：$summary" else "导入部分完成：$summary"
+                // 需要重启的两类：覆盖还原动了设置项；或写入了词库（词库只在 IME 启动时加载）
+                val needRestart = (mode == ConfigBackupManager.ImportMode.RESTORE && r.prefsApplied > 0) ||
+                    (includeDicts && r.dictsWritten > 0)
+                val builder = AlertDialog.Builder(this)
+                    .setTitle("导入完成")
+                    .setMessage(summary + if (needRestart) "\n\n写入的设置与词库需重启输入法后生效。" else "")
+                if (needRestart) {
+                    // 选「稍后」时刷新本页：设置已落盘，页面上的开关/输入框要显示新值而不是旧值
+                    builder.setNegativeButton("稍后") { _, _ -> recreate() }
+                        .setPositiveButton("重启输入法") { _, _ -> restartImeProcess() }
+                } else {
+                    builder.setPositiveButton("好", null)
+                }
+                val dialog = builder.create()
+                // 返回键 / 点到框外走 cancel，**不会**触发上面的「稍后」回调（同 importConfirmDialog）：
+                // 此刻配置已落盘，页面上的旧值必须一并刷新
+                dialog.setOnCancelListener { recreate() }
+                // 必须登记（showTipDialog）：本框是代码创建的，不登记就会在旋转重建时泄漏窗口、
+                // 且重建后这次导入的结论无处可看
+                showTipDialog(dialog)
+            }
+        }.apply { isDaemon = true; name = "jinn-config-import" }.start()
+    }
+
+    /**
+     * 导入完成后，把「不需要重启就生效」的开关立即同步到运行时。
+     *
+     * 这些开关平时靠各自监听器里的 `setXxx` 即时生效；导入是**绕过监听器**直接写 prefs 的，
+     * 不同步的话用户点「稍后」后看到的是「导入成功但行为没变」—— 繁体 / 档位 / 模糊音 / 学习
+     * 都属于这一类（真正必须重启的只有词库与其它启动期读取的项，提示语里已经写明）。
+     */
+    private fun syncImmediateSettings() {
+        val p = Prefs(this)
+        PinyinEngine.setRareTiers(p.rareTier2, p.rareTier3)
+        PinyinEngine.setTraditional(p.useTraditional)
+        PinyinEngine.setFuzzyMask(p.fuzzyPinyinMask)
+        UserFrequency.setEnabled(p.userLearning)
+        Diagnostics.i(
+            TAG,
+            "导入后同步即时设置: 档2=${p.rareTier2} 档3=${p.rareTier3} " +
+                "繁体=${p.useTraditional} 模糊音=${p.fuzzyPinyinMask} 学习=${p.userLearning}",
+        )
+    }
+
+    /** 先把设置写实、再延迟杀进程：系统随后会自动重建 IME 服务 */
+    private fun restartImeProcess() {
+        Diagnostics.i(TAG, "restartImeProcess: 重启输入法进程")
+        // `apply()` 是异步的：只靠延时 800ms 赌它写完，IO 压力大时会丢最后一批键
+        // （进程被直接杀时不走 onPause/onStop，没有别的时机能替我们等）
+        // 失败要留痕：磁盘满时表现为「重启后设置回退」，没有日志就无从排查
+        if (!runCatching { Prefs(this).flush() }.getOrDefault(false)) {
+            Diagnostics.w(TAG, "restartImeProcess: 主设置落盘失败")
+        }
+        if (!runCatching { ClipboardPrefs.of(this).flush() }.getOrDefault(false)) {
+            Diagnostics.w(TAG, "restartImeProcess: 剪贴板设置落盘失败")
+        }
+        uiHandler.postDelayed({ android.os.Process.killProcess(android.os.Process.myPid()) }, 800L)
+    }
+
+    /**
+     * 处理期间的模态进度框。
+     *
+     * 为什么必须有：密钥派生按 OWASP 量级取 600k 次 PBKDF2，手机上要 1~2 秒；SAF 写入、
+     * 词库解包也可能更久。这段空窗期里如果界面上什么都没有（原来只改一行 11sp 的灰色小字），
+     * 用户会以为点了没反应、甚至重复点击。模态框 + 不确定进度条把「正在进行」摆到台面上，
+     * 结束（成功或失败）时由 [dismissBusy] 统一关闭。
+     */
+    private fun showBusy(message: String) {
+        if (isFinishing || isDestroyed) return
+        dismissBusy()
+        val bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            isIndeterminate = true
+        }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpOf(20), dpOf(16), dpOf(20), dpOf(16))
+            addView(
+                TextView(this@SettingsActivity).apply {
+                    text = message
+                    textSize = 14f
+                }
+            )
+            addView(bar, lpOf(14))
+        }
+        busyDialog = AlertDialog.Builder(this)
+            .setTitle(TEXT_BUSY_TITLE)
+            .setView(box)
+            .setCancelable(false)
+            .create()
+        busyDialog?.show()
+    }
+
+    private fun dismissBusy() {
+        busyDialog?.dismiss()
+        busyDialog = null
+    }
+
+    /** 结果提示统一走模态框：一行灰色小字在慢机/亮屏下太容易被忽略 */
+    private fun alert(title: String, message: String, action: (() -> Unit)? = null) {
+        if (isFinishing || isDestroyed) return
+        val builder = AlertDialog.Builder(this).setTitle(title).setMessage(message)
+        if (action == null) {
+            builder.setPositiveButton("好", null)
+        } else {
+            builder.setNegativeButton("关闭", null).setPositiveButton("重新输入密码") { _, _ -> action() }
+        }
+        showTipDialog(builder.create())
+    }
+
+    /**
+     * 弹出提示类对话框并登记，`onDestroy` 时统一 dismiss（否则旋转/返回时 WindowLeaked）。
+     *
+     * 同一时刻只保留一个：后弹的会先收掉前一个，避免叠窗。**不要**给它传
+     * `setOnDismissListener`（这里要用它清引用，覆盖会丢）。
+     */
+    private fun showTipDialog(dialog: Dialog): Dialog {
+        tipDialog?.dismiss()
+        tipDialog = dialog
+        dialog.setOnDismissListener { if (tipDialog === dialog) tipDialog = null }
+        dialog.show()
+        return dialog
+    }
+
+    private fun dpOf(dp: Int): Int = (dp * resources.displayMetrics.density).toInt()
+
+    private fun lpOf(topDp: Int): LinearLayout.LayoutParams =
+        LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+        ).apply { topMargin = dpOf(topDp) }
+
+    /**
+     * 明文输入框（刻意**不用**密码类型）。
+     *
+     * 备份密码只能用汉字，而 `textPassword` / `textVisiblePassword` 一类在部分 ROM 上会唤起
+     * 系统的「安全键盘」，安全键盘打不出拼音汉字。这里用普通文本 + `TYPE_TEXT_FLAG_NO_SUGGESTIONS`：
+     * 内容可见、能正常调用本输入法打汉字，同时让键盘侧的敏感度判定生效
+     * （不做联想、不记词频，见 [InputFieldPrivacy]）。
+     */
+    private fun plainTextField(hint: String): EditText = EditText(this).apply {
+        this.hint = hint
+        maxLines = 1
+        setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 15f)
+        importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
+        // 顺序有讲究：`maxLines` 一类属性会回头改写 inputType（单行化会清标志），
+        // 而 `setRawInputType` 不走那套单行处理，能保证「普通文本 + 不联想」原样送达输入法。
+        // NO_SUGGESTIONS 是给键盘侧看的：本项目键盘据此不联想、不记词频（见 InputFieldPrivacy）。
+        // imeOptions 会重写 TYPE_MASK_FLAGS 那一批位，必须放在 setRawInputType **之前**，
+        // 否则会把刚设好的 NO_SUGGESTIONS 抹掉（隐私效果靠 imeOptions 通道仍在，但少一层保险）
+        imeOptions = EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
+        setRawInputType(InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS)
+    }
+
+    private companion object {
+        const val TAG = "SettingsActivity"
+
+        /**
+         * 进程级「待提示结果」。
+         *
+         * 后台任务可能跨越页面重建（旋转、系统回收后恢复）才回来，这时结果没人展示。
+         * 把结论留在这里、由新实例的 onCreate 消费，用户至少不会「什么都没看到就以为失败」
+         * （导入尤其危险：数据其实已经落盘，用户重导一次等于白覆盖一遍）。
+         */
+        @Volatile
+        private var pendingNotice: String? = null
+
+        // ── 配置备份文案（strings.xml 默认不改动，文案收敛在此处） ──
+        const val TEXT_EXPORT_CONFIG = "导出配置文件"
+        const val TEXT_IMPORT_CONFIG = "导入配置文件"
+        const val TEXT_CONFIG_HINT = "AES-256 加密  密码只能用汉字  导入时要输密码"
+        const val TEXT_EXPORT_DESC = "导出内容：全部设置项、用户词频\n" +
+            "包含连接设置（服务器地址/端口）与语音提示词" +
+            "包含翻译设置的 API Key 凭据" +
+            "禁止分享给不信任的人(即使它无法破解)\n" +
+            "密码不保存在本机，忘记后无法解密 永久丢失"
+        const val TEXT_INCLUDE_CLIPBOARD =
+            "额外导出:剪贴板历史 明文，靠压缩密码保护\n可能含身份地址、手机银行、账号密码"
+        const val TEXT_INCLUDE_DICTS = "额外导出:已下载词库（没必要,可重复下）"
+        const val TEXT_PWD_HINT = "备份密码（4~64 个不相同的汉字）"
+        const val TEXT_PWD_HINT_CONFIRM = "再输一次备份密码"
+        const val TEXT_PWD_MISMATCH = "两次输入的密码不一致"
+        const val TEXT_EXPORTING = "正在打包并加密…"
+        const val TEXT_EXPORT_FAIL = "导出失败，请重试"
+        const val TEXT_IMPORT_PWD_TITLE = "输入备份密码"
+        const val TEXT_IMPORT_PWD_DESC = "备份已加密  请输入导出时设置的密码\n" +
+            "密码错误 / 文件被改动 都无法解密"
+        const val TEXT_DECRYPTING = "正在解密（密钥校验中，请稍候）…"
+        const val TEXT_DECRYPT_FAIL = "密码错误或文件已损坏，无法解密"
+        const val TEXT_EXPORT_CANCELED = "已取消导出"
+        const val TEXT_IMPORT_CANCELED = "已取消导入"
+        const val TEXT_BUSY_TITLE = "请稍候"
+        const val TEXT_BUSY_EXPORT = "正在打包并加密配置…\n（密钥派生按安全强度计算，约需 1~2 秒，请勿退出）"
+        const val TEXT_BUSY_DECRYPT = "正在解密并校验密码…\n（约需 1~2 秒，请勿退出）"
+        const val TEXT_BUSY_IMPORT = "正在导入配置与数据…"
+
+        // 模糊音容错：入口文案（页面内的标题 / 说明 / 按钮文案在 FuzzyPinyinActivity 里下发）
+        const val TEXT_FUZZY_ENTRY = "增加模糊拼音"
+
+        // 加更多生僻字：入口文案（页面内的文案在 RareCharsActivity 里下发）
+        const val TEXT_RARE_ENTRY = "加更多生僻字"
+
+        // 敲击音效反馈：入口文案（页面内文案在 TapSoundActivity 里下发）
+        const val TEXT_TAP_SOUND_ENTRY = "敲击音效反馈"
+        const val TEXT_CLIPBOARD_CUSTOMIZE_ENTRY = "剪贴板自定义"
+
+        /** 图库快贴：设置页只留这一个入口，目录绑定 / 自动返回 / 缩略图布局都在子页面里 */
+        const val TEXT_GALLERY_SETTINGS_ENTRY = "图库快贴功能"
+
+        // 只使用繁体字：胶囊开关文案（与「自动唤起键盘」同行，紧随其后）
+        const val TEXT_USE_TRADITIONAL = "只使用繁体字"
+
+        // 在线翻译（BYOK）：卡片文案（页面内的标题 / 说明 / 按钮文案在 TranslationSettingsActivity 里下发）
+        const val TEXT_TRANSLATE_SWITCH = "启用翻译(需要联网,发送原文,接收译文)"
+        const val TEXT_TRANSLATE_SETTINGS = "翻译设置"
+        const val TEXT_BUSY_WRITE = "正在写入文件…"
+        const val TEXT_READ_FAIL = "无法读取所选文件：可能已被移走、授权已失效，或不是本应用的加密备份包" +
+            "（也可能是文件超过 256MB 上限）"
+        const val TEXT_READ_TIMEOUT = "读取备份文件超时（网络盘或文件过大）：请把文件保存到本机后重试"
+        const val TEXT_FORMAT_UNKNOWN = "备份内容无法识别：可能由不兼容的版本生成，或文件已被改动"
+        const val TEXT_IMPORT_FAIL = "导入失败：备份包不完整/已损坏，或写入本机失败（如存储空间不足）"
+        const val TEXT_IMPORTING = "正在导入…"
+        const val TEXT_MODE_RESTORE = "覆盖还原（设置与词频按备份写回，剪贴板并入本机历史）"
+        const val TEXT_MODE_MERGE = "仅并入数据（只合并词频、剪贴板与词库，保留本机设置）"
+
+        /**
+         * 「检查更新」看门狗超时：两源串行的总预算（`UpdateChecker.TOTAL_BUDGET_MS` = 25s）+ 5s 余量。
+         *
+         * 15s 版本按「单个 10s 超时」留余量，但 GitHub 不可达时还要回退 Gitee 再来一轮，
+         * 看门狗会先于请求熄灯解锁 —— 防重入判据随之失效，用户可并发发起第二次检查并重复弹窗。
+         */
+        const val UPDATE_WATCHDOG_MS = 30_000L
+
+        /** 自动检查的日志换算用（毫秒/天）；节流判据本体在 [UpdateChecker.shouldAutoCheck] */
+        const val DAY_MS = 24L * 60 * 60 * 1000
+
+        // 可选词库的文件名、下载源与体积/耗时说明已统一收敛到 OptionalDicts，
+        // 由「分类词库」页使用；设置页只保留一个跳转入口。
+    }
+}

@@ -1,0 +1,106 @@
+package com.jinn.inputmethod
+
+import kotlin.math.roundToInt
+
+/**
+ * 「半透明键盘」的定义域与换算（纯 JVM 逻辑，见 KeyTransparencyTest）。
+ *
+ * 一个旋钮（[Prefs.keyTransparencyPercent]）控制整块键盘四层面板的透明度：
+ *  - 背板（键盘底色 `kb_bg`、面板底 `app_bg`）：[plateAlpha]，面上没有文字，可以做得最透；
+ *  - 内容面（键面、按钮，以及候选栏底）：[surfaceAlpha]，必须比背板实，
+ *    最透时仍保留 [MIN_SURFACE_ALPHA] 的不透明度，否则文字会糊在应用内容上。
+ *    候选栏底**固定**用这一档，且空白铺底时直接用**功能按钮色**，见
+ *    `PinyinKeyboardView.updateCandidateBarBackground`：它曾按「是否有内容」在 plate / surface
+ *    之间切档，但两档透出量不同（20% 时 80% vs 92%）⇒ 空白态会在浅色页面上显出一圈底色差；
+ *    统一到本档、并让空白态的栏色与功能按钮同色后，两者连成一块
+ *    （2026-10-02，方案 A），别再切回动态选档。
+ *
+ * 0%（默认）= 完全不透明，与历史观感逐像素一致；[MAX_PERCENT] = 背板可全透（[MIN_PLATE_ALPHA] = 0），
+ * 内容面（含有内容时的候选栏底）仍保留 [MIN_SURFACE_ALPHA]，再透文字就糊在应用内容上了。
+ *
+ * 透明度只淡「面」不淡文字，整键 `View.setAlpha` 会把文字一起变淡，
+ * 因此本功能的绘制路径一律走 [withAlpha] 给面颜色套 alpha，文字/提示色原样保留
+ * （例外：符号层禁用态的大写键用整键 alpha 置灰，那是与透明度无关的既有视觉，
+ * 见 `PinyinKeyboardView` 符号层分支）。
+ *
+ * 注：只做「透出」，不做背景模糊（跨窗口模糊要求 API 31+ 且系统开关允许，
+ * 本机 Android 10 不支持）， 这是与「毛玻璃」在观感上的差别。
+ */
+object KeyTransparency {
+
+    /** 下界：0% = 完全不透明 */
+    const val MIN_PERCENT = 0
+
+    /** 上界：100%，背板全透，键面/候选栏在最透时仍保留 [MIN_SURFACE_ALPHA]（可读性下限） */
+    /**
+     * 百分比上界：100（物理上限 —— 100% = 背板全透、键面按 [MIN_SURFACE_ALPHA] 保底）。
+     *
+     * 外观页其余滑杆 2026-10-09 按用户要求把定义域扩了两倍，本项**不扩**：
+     * 100% 已到「全透」的物理边界，再往上没有可表达的状态（会变成静默钳位，滑杆白拖一截）。
+     */
+    const val MAX_PERCENT = 100
+
+    /** 默认值：不透明（不改动历史观感） */
+    const val DEFAULT_PERCENT = MIN_PERCENT
+
+    /** SeekBar 上界：进度即百分比（1% 一格，用户可在定义域内自由取值） */
+    val PROGRESS_MAX: Int = MAX_PERCENT - MIN_PERCENT
+
+    /** 键面（带文字的面）最透时的不透明度：60% 是文字可读性的经验下限 */
+    const val MIN_SURFACE_ALPHA = 0.6f
+
+    /** 背板最透时的不透明度（= 1 - MAX_PERCENT / 100，测试守卫用）：100% 时完全透出应用内容 */
+    const val MIN_PLATE_ALPHA = 0f
+
+    /** 把任意输入钳到定义域内（脏配置/外部写入一律收敛到合法值） */
+    fun clampPercent(percent: Int): Int = percent.coerceIn(MIN_PERCENT, MAX_PERCENT)
+
+    /** 百分比 → SeekBar 进度（标准与 [KeyAppearance] 的换算一致：进度 = 值 − 下界） */
+    fun percentToProgress(percent: Int): Int = clampPercent(percent) - MIN_PERCENT
+
+    /** SeekBar 进度 → 百分比 */
+    fun progressToPercent(progress: Int): Int = clampPercent(progress + MIN_PERCENT)
+
+    /** 背板（键盘底色）不透明度：0% → 1f，[MAX_PERCENT] → [MIN_PLATE_ALPHA] */
+    fun plateAlpha(percent: Int): Float = 1f - clampPercent(percent) / 100f
+
+    /** 键面/候选栏不透明度：0% → 1f，[MAX_PERCENT] → [MIN_SURFACE_ALPHA] */
+    fun surfaceAlpha(percent: Int): Float =
+        1f - clampPercent(percent) / MAX_PERCENT.toFloat() * (1f - MIN_SURFACE_ALPHA)
+
+    /**
+     * 「整树重扫一次面透明度」的身份键（MEM-26，纯函数）。
+     *
+     * 判据必须是**联合**的：只比档位时，「仅换肤」（档位没动、底色由 `applySkin` 改了）会命中早退，
+     * 键面与面板的 alpha 不再刷新 —— 静默外观错误（键面还带着上一套皮肤的底，没有日志也没有异常）。
+     *
+     * 用**原始 percent** 而不是 [formatPercent] 的文案：文案将来若改成「关 / 弱 / 强」这类档名，
+     * 两个不同档位会拼出同一个键，早退就会漏扫。
+     *
+     * 视图树被整体重建（IME 换视图 / 符号布局）走的是**新实例**，它一进来「上次的键」就是空串，
+     * 因此不需要额外的「面代数」。
+     */
+    fun appearanceKey(percent: Int, skinId: String): String = "${clampPercent(percent)}|$skinId"
+
+    /** 数值文案（与 [KeyAppearance.formatDp] 同为固定格式，整数百分比） */
+    fun formatPercent(percent: Int): String = "${clampPercent(percent)}%"
+
+    /** 给颜色套上 0..1 的不透明度：只改 alpha 通道，RGB 原样保留（**替换**语义） */
+    fun withAlpha(color: Int, alpha: Float): Int {
+        val a = (alpha.coerceIn(0f, 1f) * 255f).roundToInt().coerceIn(0, 255)
+        return (color and 0x00FFFFFF) or (a shl 24)
+    }
+
+    /**
+     * 按**原 alpha 比例**缩放颜色：与 [withAlpha] 的「替换」语义并列的另一种合成。
+     *
+     * 填充色只用 [withAlpha]：它们按约定是不透明的（见 `KeyboardSkins.issues`）。
+     * 而描边色是**刻意自带 alpha** 的半透明高光（磨砂 `0x33FFFFFF` = 20%、石墨 12%、极光 40%），
+     * 换成替换语义会在默认档（面 alpha = 1）把它抹成全不透明 —— 磨砂 / 石墨变成一圈实白硬边，
+     * 极光 / 霓虹 / 岩浆变成实色饱和描边，与「半透明高光描边」的设计相反（BUG.md 第 15 批 M1）。
+     */
+    fun scaleAlpha(color: Int, factor: Float): Int {
+        val base = ((color ushr 24) and 0xFF) / 255f
+        return withAlpha(color, base * factor)
+    }
+}

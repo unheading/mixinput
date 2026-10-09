@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 局域网直连飞牛 NAS 上的 Jinn 服务端 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 监听网络恢复（WiFi↔热点切换时主动重连）；缺失会导致 registerNetwork 抛 SecurityException 被吞 -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 采集麦克风音频送服务端识别 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- 按键震动反馈（关闭 / 弱 / 中 / 强 四档）；普通权限，无需运行时弹窗申请 -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- 不申请任何存储权限：日志写应用专属目录，诊断包经系统文件选择器（SAF）导出 -->
+
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:supportsRtl="true"
+        android:theme="@style/AppTheme"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules">
+
+        <!-- 语音输入法服务：持有 BIND_INPUT_METHOD 权限的只有系统，可安全导出 -->
+        <service
+            android:name=".JinnIme"
+            android:exported="true"
+            android:permission="android.permission.BIND_INPUT_METHOD">
+            <intent-filter>
+                <action android:name="android.view.InputMethod" />
+            </intent-filter>
+            <meta-data
+                android:name="android.view.im"
+                android:resource="@xml/method" />
+        </service>
+
+        <!-- 图库快贴：选图中转页（无界面；Photo Picker → 复制进 cache → 交 IME 插入） -->
+        <activity
+            android:name=".GalleryPickActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!-- 图库快贴功能页：目录绑定 / 清除绑定 / 自动返回 / 缩略图布局 -->
+        <activity
+            android:name=".GallerySettingsActivity"
+            android:exported="false" />
+
+        <!-- 图库快贴：只对外开放 cache/gallery_share 下的选图（宿主经 commitContent 临时授权读） -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.share"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/share_file_paths" />
+        </provider>
+
+        <!-- 分类词库页：从设置页进入，按需下载/删除可选词库包 -->
+        <activity
+            android:name=".DictManagerActivity"
+            android:exported="false"
+            android:label="@string/dict_manager_title" />
+
+        <!-- 快捷补充：直接编辑自定义词库的源文本，保存即导入（与「导入 .txt」共用同一份文本）。
+             旋转等配置变更**不重建**本页（BUG.md L-867）：编辑器是代码创建且无 id，系统不保存/恢复它的内容，
+             重建就会让未保存的编辑静默丢失（真机实证：盘上改内容后旋转，编辑框显示的是盘上新内容），
+             且保存中旋转会让旧实例的写盘结果回执丢失。本页布局全是代码构建，旋转后自行重新测量即可。 -->
+        <activity
+            android:name=".CustomDictEditActivity"
+            android:exported="false"
+            android:label="@string/dict_action_quick_edit"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:windowSoftInputMode="stateAlwaysVisible|adjustResize" />
+
+        <!-- 符号分组排序页：从设置页「符号分组顺序」按钮进入 -->
+        <activity
+            android:name=".SymbolOrderActivity"
+            android:exported="false"
+            android:label="@string/symbol_order_title" />
+
+        <!-- 模糊音容错页：从设置页「增加模糊拼音」按钮进入（每组一个勾选框，勾选即生效） -->
+        <activity
+            android:name=".FuzzyPinyinActivity"
+            android:exported="false" />
+
+        <!-- 加更多生僻字页：从设置页「加更多生僻字」按钮进入（两档开关，档 3 依赖档 2） -->
+        <activity
+            android:name=".RareCharsActivity"
+            android:exported="false" />
+
+        <!-- 收藏符号编辑页：从设置页「编辑收藏符号」按钮进入 -->
+        <activity
+            android:name=".FavoriteSymbolsActivity"
+            android:exported="false"
+            android:label="@string/favorite_title" />
+
+        <!-- 键盘外观页：圆角与间隙，从设置页「按钮圆角间隙」进入 -->
+        <activity
+            android:name=".KeyAppearanceActivity"
+            android:exported="false"
+            android:label="@string/key_appearance_entry" />
+
+        <!-- 剪贴板自定义页：从设置页「敲击音效反馈」同行右侧进入（数量/体积/收藏/单条/分页/搜索上限） -->
+        <activity
+            android:name=".ClipboardCustomizeActivity"
+            android:exported="false" />
+
+        <!-- 敲击音效反馈页：从设置页「敲击音效反馈」进入（六组音色分配 + 震动四档，改动即落盘） -->
+        <activity
+            android:name=".TapSoundActivity"
+            android:exported="false" />
+
+        <!-- 翻译设置页：Provider / 凭据 / 目标语言，从设置页「翻译设置」进入（改动即落盘） -->
+        <activity
+            android:name=".TranslationSettingsActivity"
+            android:exported="false"
+            android:launchMode="singleTop" />
+
+        <!-- OpenAI 兼容配置页：基础 / 翻译 / 参数 / 高级四段，从翻译设置页的 OpenAI 兼容区块进入 -->
+        <activity
+            android:name=".OpenAiSettingsActivity"
+            android:exported="false"
+            android:launchMode="singleTop" />
+
+        <!-- 翻译原文范围设置页：每家服务方独立的「哪些算原文」+ 单次字节上限，从翻译设置页进入 -->
+        <activity
+            android:name=".TranslationSourceActivity"
+            android:exported="false"
+            android:launchMode="singleTop" />
+
+        <!-- 剪贴板历史管理页：搜索 / 分类 / 多选 / 分类删除，从「剪贴板自定义」底部进入 -->
+        <activity
+            android:name=".ClipboardHistoryActivity"
+            android:exported="false" />
+
+        <!-- 设置页：既是输入法设置入口，也可从桌面启动 -->
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="true"
+            android:label="@string/settings_title">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+    </application>
+</manifest>

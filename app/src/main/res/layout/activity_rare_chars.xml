@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 加更多生僻字页：从设置页「加更多生僻字」按钮进入（2026-09-27 起取代原单一开关）。
+     两档可选字表，档 3 依赖档 2；勾选即落盘即时生效。文案在 RareCharsActivity 里下发
+     （strings.xml 默认不改动，与模糊音页同做法），故此处不写 android:text -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    style="@style/PageRoot"
+    android:orientation="vertical">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <TextView
+            style="@style/PageTitle"
+            android:id="@+id/text_rare_title"
+            android:layout_height="wrap_content" />
+
+        <Button
+            style="@style/PageCloseButton"
+            android:id="@+id/btn_rare_close" />
+    </LinearLayout>
+
+    <TextView
+        style="@style/PageDesc"
+        android:id="@+id/text_rare_desc"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:overScrollMode="never"
+        android:scrollbars="none">
+
+        <LinearLayout
+            android:id="@+id/rare_tier_list"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:baselineAligned="false"
+            android:orientation="vertical" />
+    </ScrollView>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:orientation="horizontal">
+
+        <Button
+            style="@style/SettingsButton"
+            android:id="@+id/btn_rare_all"
+            android:layout_width="0dp"
+            android:layout_weight="1" />
+
+        <Button
+            style="@style/SettingsButton"
+            android:id="@+id/btn_rare_none"
+            android:layout_width="0dp"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1" />
+    </LinearLayout>
+</LinearLayout>

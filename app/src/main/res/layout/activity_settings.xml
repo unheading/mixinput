@@ -1,0 +1,688 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  设置页（极光紧凑风格）：配置服务端并引导启用输入法。
+  能同排的控件一律同排；删掉冗余分组标题，减少卡片数量；
+  深蓝极光渐变背景 + 大圆角卡片，视觉更圆润。
+
+  布局顺序（自上而下，2026-09-25 定，严格照排）：
+    标题 → 保存配置并立即重启生效 → 输入法测试（点这里唤起键盘）→ 检查软件更新 / 打开下载页面 →
+    启用本输入法 / 改默认输入法 → 符号分组顺序 / 符号的自定义 →
+    补充短语词库 / 键盘外观皮肤 → 增加模糊拼音 → 敲击音效反馈 →
+    拼音输入方案 / 界面明暗切换（定时行同卡片）→ 候选词的行数 / 剪贴板的数量 →
+    图库快贴功能（单按钮，目录绑定 / 自动返回 / 缩略图布局都在子页面里）→
+    键盘内显韵母 / 双拼候选全音 → 自动唤起键盘 / 加更多生僻字 →
+    用户词频学习 / 追加候选词语 → 语音输入 → 授权麦克风 → NAS 语音 →
+    导出配置文件 / 导入配置文件 → 导出诊断数据（单按钮）→ 使用说明纯文本
+  -->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    style="@style/PageRoot"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:overScrollMode="never"
+    tools:ignore="TooManyViews">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <!-- 标题 -->
+        <TextView
+            style="@style/PageHeroTitle"
+            android:text="@string/settings_title" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:layout_marginBottom="6dp"
+            android:gravity="center"
+            android:text="@string/settings_subtitle"
+            android:textColor="@color/text_secondary"
+            android:textSize="12sp" />
+
+        <!-- 保存并重启：置顶，保存永久配置后重启输入法进程 -->
+        <Button
+            style="@style/SettingsButtonPrimary"
+            android:id="@+id/btn_save"
+            android:layout_marginBottom="0dp"
+            android:text="@string/settings_save" />
+
+        <TextView
+            android:id="@+id/text_test"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="-2dp"
+            android:layout_marginBottom="0dp"
+            android:gravity="center"
+            android:textColor="@color/text_secondary"
+            android:textSize="12sp" />
+
+        <!-- 输入法测试：点这里唤起键盘打字；同时也是「能收图片的宿主」—— 声明 image/* 后键盘的「图库」键
+             在这里出现，收到的图直接插进框里（见 ReceivingEditText） -->
+        <LinearLayout
+            style="@style/SettingsCard">
+
+            <com.jinn.inputmethod.ReceivingEditText
+                style="@style/SettingsField"
+                android:id="@+id/edit_ime_test"
+                android:layout_width="match_parent"
+                android:hint="@string/settings_ime_test_hint"
+                android:importantForAutofill="no"
+                android:imeOptions="actionDone"
+                android:inputType="textMultiLine|textCapSentences"
+                android:maxLines="3"/>
+        </LinearLayout>
+
+        <!-- 检查更新：版本号取构建日期（yyyyMMdd）与远程 tag 比较；打开设置页时自动检查（7 天一次），
+             同行右侧为 Gitee 下载页入口 -->
+        <LinearLayout
+            style="@style/SettingsCardRow">
+
+            <Button
+                style="@style/SettingsButton"
+                android:id="@+id/btn_check_update"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:minWidth="0dp"
+                android:text="@string/settings_check_update" />
+
+            <Button
+                style="@style/SettingsButton"
+                android:id="@+id/btn_update_download"
+                android:layout_width="0dp"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:minWidth="0dp"
+                android:text="@string/update_download_page" />
+        </LinearLayout>
+
+        <!-- 输入法控制：启用 / 切换。与语音无关，不受语音开关影响 -->
+        <LinearLayout
+            style="@style/SettingsCardRow">
+
+            <Button
+                style="@style/SettingsButton"
+                android:id="@+id/btn_enable"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:minWidth="0dp"
+                android:text="@string/settings_enable_ime" />
+
+            <Button
+                style="@style/SettingsButton"
+                android:id="@+id/btn_pick"
+                android:layout_width="0dp"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:minWidth="0dp"
+                android:text="@string/settings_pick_ime" />
+        </LinearLayout>
+
+        <!-- 符号布局入口：分组顺序 + 收藏编辑，同一张卡片内并排 -->
+        <LinearLayout
+            style="@style/SettingsCardRow">
+
+            <Button
+                style="@style/SettingsButton"
+                android:id="@+id/btn_symbol_order"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:minWidth="0dp"
+                android:text="@string/symbol_order_title" />
+
+            <Button
+                style="@style/SettingsButton"
+                android:id="@+id/btn_edit_favorites"
+                android:layout_width="0dp"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:minWidth="0dp"
+                android:text="@string/favorite_entry_title" />
+        </LinearLayout>
+
+        <!-- 词库补充 / 键盘外观：两个入口按钮并排，各自打开独立页面设置 -->
+        <LinearLayout
+            style="@style/SettingsCardRow">
+
+            <Button
+                style="@style/SettingsButton"
+                android:id="@+id/btn_dict_expand"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:minWidth="0dp"
+                android:text="@string/dict_entry_button" />
+
+            <Button
+                style="@style/SettingsButton"
+                android:id="@+id/btn_key_appearance"
+                android:layout_width="0dp"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:minWidth="0dp"
+                android:text="@string/key_appearance_entry" />
+        </LinearLayout>
+
+        <!-- 模糊音容错 / 加更多生僻字：两个入口按钮并排（文案在代码里下发，strings.xml 默认不改动） -->
+        <LinearLayout
+            style="@style/SettingsCardRow">
+
+            <Button
+                style="@style/SettingsButton"
+                android:id="@+id/btn_fuzzy_pinyin"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:minWidth="0dp" />
+
+            <Button
+                style="@style/SettingsButton"
+                android:id="@+id/btn_rare_chars"
+                android:layout_width="0dp"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:minWidth="0dp" />
+        </LinearLayout>
+
+        <!-- 敲击音效反馈 / 剪贴板自定义：两按钮并排 → 各自的独立全屏页 -->
+        <LinearLayout
+            style="@style/SettingsCardRow">
+
+            <Button
+                style="@style/SettingsButton"
+                android:id="@+id/btn_tap_sound"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:minWidth="0dp" />
+
+            <Button
+                style="@style/SettingsButton"
+                android:id="@+id/btn_clipboard_customize"
+                android:layout_width="0dp"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:minWidth="0dp" />
+        </LinearLayout>
+
+        <!-- 图库快贴：目录绑定 / 清除绑定 / 自动返回 / 缩略图布局都收在子页面里。
+             ⚠ 必须包在 SettingsCardRow 里 —— 卡片的圆角底板与边距都由它提供，
+             裸放一个 match_parent 的按钮会与上下邻居长得不一样（L-1029） -->
+        <LinearLayout
+            style="@style/SettingsCardRow">
+
+            <Button
+                style="@style/SettingsButton"
+                android:id="@+id/btn_gallery_settings"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:minWidth="0dp" />
+        </LinearLayout>
+
+        <!-- 拼音输入方案 / 键盘主题配色：两个下拉并排；«定时»模式的两个切换时刻在同卡片下方 -->
+        <LinearLayout
+            style="@style/SettingsCard">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                    <TextView
+                        style="@style/SettingsFieldTitle"
+                        android:text="@string/settings_shuangpin_scheme" />
+
+                    <com.jinn.inputmethod.UserAwareSpinner
+                        style="@style/SettingsField"
+                        android:id="@+id/spinner_shuangpin"
+                        android:layout_width="match_parent"
+                        android:layout_marginTop="2dp"
+                        android:spinnerMode="dropdown"/>
+
+                    <TextView
+                        style="@style/CardHint"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:paddingStart="4dp"
+                        android:paddingEnd="4dp"
+                        android:visibility="gone"
+                        android:text="@string/settings_shuangpin_scheme_desc"/>
+            </LinearLayout>
+
+        </LinearLayout>
+
+        <!-- 用户词频学习 / 追加候选词语：两个开关并排（各带说明小字）
+             （「加更多生僻字」2026-09-27 起改为入口按钮，与「增加模糊拼音」同行，页内是两档开关） -->
+        <LinearLayout
+            style="@style/SettingsCardRow"
+            android:baselineAligned="false">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <Switch
+                    android:id="@+id/switch_user_learning"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:minHeight="40dp"
+                    android:maxLines="2"
+                    android:ellipsize="end"
+                    android:text="@string/switch_user_learning"
+                    android:textColor="@color/text_primary"
+                    android:textSize="13sp" />
+
+                <TextView
+                    style="@style/CardHint"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="8dp"
+                    android:text="@string/switch_user_learning_desc"/>
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <Switch
+                    android:id="@+id/switch_predict"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:minHeight="40dp"
+                    android:maxLines="2"
+                    android:ellipsize="end"
+                    android:text="@string/switch_predict"
+                    android:textColor="@color/text_primary"
+                    android:textSize="13sp" />
+
+                <TextView
+                    style="@style/CardHint"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="8dp"
+                    android:text="@string/switch_predict_desc"/>
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- 自动唤起键盘 / 只使用繁体字：两个开关并排（各带说明小字）。
+             「只使用繁体字」2026-09-27 起由勾选框改为胶囊开关，与「自动唤起键盘」同行（文案在代码里下发） -->
+        <LinearLayout
+            style="@style/SettingsCardRow"
+            android:baselineAligned="false">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <Switch
+                    android:id="@+id/switch_auto_show_keyboard"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:minHeight="40dp"
+                    android:maxLines="2"
+                    android:ellipsize="end"
+                    android:text="@string/switch_auto_show_keyboard"
+                    android:textColor="@color/text_primary"
+                    android:textSize="13sp" />
+
+                <TextView
+                    style="@style/CardHint"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="8dp"
+                    android:text="@string/switch_auto_show_keyboard_desc"/>
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <Switch
+                    android:id="@+id/switch_use_traditional"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:minHeight="40dp"
+                    android:maxLines="2"
+                    android:ellipsize="end"
+                    android:textColor="@color/text_primary"
+                    android:textSize="13sp" />
+
+                <TextView
+                    style="@style/CardHint"
+                    android:id="@+id/text_use_traditional_desc"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="8dp"/>
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- 语音输入总开关：默认关闭；关闭时语音完全沉寂（不占内存、长按空格无效）。
+             下面两张卡（授权麦克风 / NAS 语音）都随它显隐，故紧随其后。 -->
+        <LinearLayout
+            style="@style/SettingsCard">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/settings_voice_input"
+                    android:textColor="@color/text_primary"
+                    android:textSize="13sp" />
+
+                <Switch
+                    android:id="@+id/switch_voice_input"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:minHeight="40dp" />
+            </LinearLayout>
+
+            <TextView
+                style="@style/CardHint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="@string/settings_voice_input_desc"/>
+        </LinearLayout>
+
+        <!-- 授权麦克风：状态 + 单个授权按钮（与下方 NAS 控件同组，随语音开关整体隐藏） -->
+        <LinearLayout
+            style="@style/SettingsCard"
+            android:id="@+id/card_mic_permission">
+
+            <TextView
+                android:id="@+id/text_mic_state"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="4dp"
+                android:text="@string/settings_grant_mic"
+                android:textColor="@color/text_secondary"
+                android:textSize="12sp" />
+
+            <Button
+                style="@style/SettingsButton"
+                android:id="@+id/btn_grant"
+                android:layout_width="match_parent"
+                android:text="@string/settings_grant_mic" />
+        </LinearLayout>
+
+        <!-- NAS 语音：地址 + 端口 / 语言 + 默认键盘 / 提示词 / 识别选项 -->
+        <LinearLayout
+            style="@style/SettingsCard"
+            android:id="@+id/card_voice_server">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:baselineAligned="false"
+                android:orientation="horizontal">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="2"
+                    android:orientation="vertical">
+
+                    <TextView
+                        style="@style/SettingsLabel"
+                        android:text="@string/settings_host" />
+
+                    <EditText
+                        style="@style/SettingsField"
+                        android:id="@+id/edit_host"
+                        android:layout_width="match_parent"
+                        android:hint="@string/settings_host"
+                        android:importantForAutofill="no"
+                        android:inputType="textUri"
+                        android:singleLine="true"/>
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        style="@style/SettingsLabel"
+                        android:text="@string/settings_port" />
+
+                    <EditText
+                        style="@style/SettingsField"
+                        android:id="@+id/edit_port"
+                        android:layout_width="match_parent"
+                        android:hint="@string/settings_port"
+                        android:importantForAutofill="no"
+                        android:inputType="number"
+                        android:singleLine="true"/>
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:layout_weight="1"
+                    android:gravity="center_vertical"
+                    android:orientation="vertical">
+
+                    <TextView
+                        style="@style/SettingsLabel"
+                        android:text="@string/settings_lock" />
+
+                    <CheckBox
+                        android:id="@+id/check_lock_server"
+                        android:layout_width="match_parent"
+                        android:layout_height="40dp"
+                        android:gravity="center"
+                        android:buttonTint="@color/accent"
+                        android:text="@string/settings_lock_short"
+                        android:textColor="@color/text_primary"
+                        android:textSize="12sp" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- 语言 + 默认键盘模式：同行，各占一半 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        style="@style/SettingsLabel"
+                        android:text="@string/settings_language" />
+
+                    <com.jinn.inputmethod.UserAwareSpinner
+                        style="@style/SettingsField"
+                        android:id="@+id/spinner_language"
+                        android:layout_width="match_parent"
+                        android:spinnerMode="dropdown"/>
+                </LinearLayout>
+
+                <Space
+                    android:layout_width="8dp"
+                    android:layout_height="1dp" />
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        style="@style/SettingsLabel"
+                        android:text="@string/settings_default_mode" />
+
+                    <com.jinn.inputmethod.UserAwareSpinner
+                        style="@style/SettingsField"
+                        android:id="@+id/spinner_default_mode"
+                        android:layout_width="match_parent"
+                        android:spinnerMode="dropdown"/>
+                </LinearLayout>
+            </LinearLayout>
+
+            <TextView
+                style="@style/SettingsLabel"
+                android:layout_marginTop="4dp"
+                android:text="@string/settings_prompt" />
+
+            <EditText
+                style="@style/SettingsFieldMultiline"
+                android:id="@+id/edit_prompt"
+                android:layout_width="match_parent"
+                android:hint="@string/settings_prompt"
+                android:importantForAutofill="no"
+                android:inputType="textMultiLine"
+                android:minHeight="64dp"/>
+
+            <!-- 识别选项：两个开关一行 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:orientation="horizontal">
+
+                <CheckBox
+                    android:id="@+id/check_strip"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/settings_strip_punc"
+                    android:textColor="@color/text_primary"
+                    android:textSize="12sp" />
+
+                <CheckBox
+                    android:id="@+id/check_composing"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/settings_composing"
+                    android:textColor="@color/text_primary"
+                    android:textSize="12sp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- 在线翻译（BYOK）：总开关 + 配置入口。开关决定键盘功能面板是否显示「翻译」键；
+             文案全部代码下发（strings.xml 默认不改动），布局里不写 android:text -->
+        <LinearLayout
+            style="@style/SettingsCard">
+
+            <Switch
+                android:id="@+id/switch_translate"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:ellipsize="end"
+                android:maxLines="2"
+                android:minHeight="40dp"
+                android:textColor="@color/text_primary"
+                android:textSize="13sp" />
+
+            <TextView
+                style="@style/CardHint"
+                android:id="@+id/text_translate_state"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                />
+
+            <Button
+                style="@style/SettingsButton"
+                android:id="@+id/btn_translate_settings"
+                android:layout_width="match_parent"
+                android:layout_marginTop="4dp" />
+        </LinearLayout>
+
+        <!-- 配置备份：导出 / 导入（跨设备迁移）。
+             两个按钮的文本由代码下发：strings.xml 默认不改动，布局里留空避免硬编码文案进入资源 -->
+        <LinearLayout
+            style="@style/SettingsCard">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <Button
+                    style="@style/SettingsButton"
+                    android:id="@+id/btn_config_export"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:minWidth="0dp" />
+
+                <Button
+                    style="@style/SettingsButton"
+                    android:id="@+id/btn_config_import"
+                    android:layout_width="0dp"
+                    android:layout_marginStart="8dp"
+                    android:layout_weight="1"
+                    android:minWidth="0dp" />
+            </LinearLayout>
+
+            <TextView
+                style="@style/CardHint"
+                android:id="@+id/text_config_hint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                />
+        </LinearLayout>
+
+        <!-- 导出诊断数据（单按钮，2026-09-25 定）：把日志目录打包，经系统文件选择器
+             存到用户自选位置。原「发给作者」分享按钮及其分享通道 / FileProvider 已移除。 -->
+        <LinearLayout
+            style="@style/SettingsCard">
+
+            <Button
+                style="@style/SettingsButton"
+                android:id="@+id/btn_export_diag"
+                android:layout_width="match_parent"
+                android:minWidth="0dp"
+                android:text="@string/settings_export_diag" />
+
+            <TextView
+                style="@style/CardHint"
+                android:id="@+id/text_diag_dir"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:singleLine="true"
+                android:ellipsize="middle"/>
+        </LinearLayout>
+
+        <!-- 使用说明纯文本（最底部） -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:layout_marginBottom="6dp"
+            android:gravity="center"
+            android:text="@string/settings_usage"
+            android:textColor="@color/text_secondary"
+            android:textSize="12sp" />
+    </LinearLayout>
+</ScrollView>

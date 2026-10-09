@@ -1,0 +1,182 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    页面控件的统一规格。
+
+    排序：页面骨架 → 分组容器 → 字段 → 按钮 → 对话框主题。
+    注释规范：每节一行节名注释；块内补充只写「为什么这样定」这类必要事实，不写日期、不写改动缘由。
+    硬约束（全文件仅此四条）：
+      ① 同类控件只写 style，不各写颜色 / 字号 / 高度；颜色走色令牌，明暗自动切换。
+      ② 同名 style 在 values-night 是整条替换、不做 item 合并，夜间目录必须写完整定义。
+      ③ 键盘配色皮肤页（activity_key_appearance.xml）保持独立，不受这些样式约束。
+      ④ SettingsButton 的 android:textSize 是键盘标点字号基准（PUNCTUATION_TEXT_SP = 本值 + 3），
+         改这里必须同步 PinyinKeyboardView 的同名常量。① 与 ④ 由 ThemeColorParityTest 机械对拍。
+-->
+<resources>
+    <!-- 页面骨架 -->
+
+    <!--
+      页面根容器：极光底色 + 给系统栏留位 + 内容三边 8dp，底部不留白。
+      不含 orientation：设置页的根是 ScrollView（无此属性），写进样式对该页无效，竖排由各页根自己写。
+      底部 padding 必须是 0：根上的 paddingBottom 在 ScrollView 页是裁剪区（clipToPadding 默认
+      true），键盘弹出时可见区最下 8dp 只画极光端点色，视觉上就是候选栏正上方多出一条纯色带。
+    -->
+    <style name="PageRoot">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">match_parent</item>
+        <item name="android:background">@drawable/bg_aurora</item>
+        <item name="android:fitsSystemWindows">true</item>
+        <item name="android:paddingStart">8dp</item>
+        <item name="android:paddingEnd">8dp</item>
+        <item name="android:paddingTop">8dp</item>
+    </style>
+
+    <!-- 页面标题：子页顶部一行，与关闭按钮同排，占满按钮之外的全部宽度 -->
+    <style name="PageTitle">
+        <item name="android:layout_width">0dp</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_weight">1</item>
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="android:textSize">16sp</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+
+    <!-- 页面说明：标题下方一段；文案在代码里下发（工程约定：strings.xml 默认不改动） -->
+    <style name="PageDesc">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:paddingTop">2dp</item>
+        <item name="android:paddingBottom">4dp</item>
+        <item name="android:textColor">@color/text_secondary</item>
+        <item name="android:textSize">12sp</item>
+    </style>
+
+    <!-- 页面主标题：首页顶部的品牌行，22sp 居中粗体；与 PageTitle 分开（那是子页标题，16sp） -->
+    <style name="PageHeroTitle">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:gravity">center</item>
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="android:textSize">22sp</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+
+    <!-- 关闭按钮：全仓同一形态与尺寸；键面字形与无障碍名取代码里唯一的 PageChrome.CLOSE / CLOSE_DESC -->
+    <style name="PageCloseButton" parent="SettingsButton">
+        <item name="android:layout_width">40dp</item>
+        <item name="android:layout_height">32dp</item>
+        <item name="android:minWidth">0dp</item>
+        <item name="android:paddingStart">0dp</item>
+        <item name="android:paddingEnd">0dp</item>
+        <item name="android:textSize">14sp</item>
+    </style>
+
+    <!-- 分组容器 -->
+
+    <!-- 组卡：竖排一「组」控件的外框 -->
+    <style name="SettingsCard">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginBottom">2dp</item>
+        <item name="android:background">@drawable/card_aurora</item>
+        <item name="android:orientation">vertical</item>
+        <item name="android:padding">6dp</item>
+    </style>
+
+    <!-- 行卡：一行并排若干控件的窄内边距版本 -->
+    <style name="SettingsCardRow" parent="SettingsCard">
+        <item name="android:orientation">horizontal</item>
+        <item name="android:padding">6dp</item>
+    </style>
+
+    <!-- 卡片内的小节标题 -->
+    <style name="SectionTitle">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="android:textSize">13sp</item>
+    </style>    <!-- 字段 -->
+
+    <!-- 字段标签 -->
+    <style name="SettingsLabel">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:textColor">@color/text_secondary</item>
+        <item name="android:textSize">12sp</item>
+        <item name="android:layout_marginBottom">2dp</item>
+    </style>
+
+    <!-- 双列卡片里的栏标题：控件上方的粗体小标题，统一 13sp 主色 -->
+    <style name="SettingsFieldTitle">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="android:textSize">13sp</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+
+    <!-- 单行输入框与下拉：全仓同一高度与内边距 -->
+    <style name="SettingsField">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">40dp</item>
+        <item name="android:background">@drawable/field_aurora</item>
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="android:textColorHint">@color/text_secondary</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:paddingStart">12dp</item>
+        <item name="android:paddingEnd">12dp</item>
+    </style>
+
+    <!-- 多行文本域（提示词 / 自定义 JSON / 自定义头）：高度随内容，行数与排版统一 -->
+    <style name="SettingsFieldMultiline" parent="SettingsField">
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:gravity">top|start</item>
+        <item name="android:minLines">2</item>
+        <item name="android:padding">12dp</item>
+    </style>
+
+    <!-- 卡片内的提示与辅助小字（开关说明、页脚、配额与错误码说明）：统一 11sp 次级色 -->
+    <style name="CardHint">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:textColor">@color/text_secondary</item>
+        <item name="android:textSize">11sp</item>
+    </style>
+
+    <!-- 按钮 -->
+
+    <!-- 普通按钮：极光次级样式，圆角、固定高度、按压态；textSize 的约束见文件头硬约束 ④ -->
+    <style name="SettingsButton">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">40dp</item>
+        <item name="android:background">@drawable/btn_aurora_secondary</item>
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="android:textSize">13sp</item>
+        <item name="android:gravity">center</item>
+    </style>
+
+    <!-- 主按钮：极光渐变填充 -->
+    <style name="SettingsButtonPrimary">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">50dp</item>
+        <item name="android:background">@drawable/btn_aurora_primary</item>
+        <item name="android:textColor">@color/text_on_accent</item>
+        <item name="android:textSize">15sp</item>
+        <item name="android:gravity">center</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+
+    <!-- 键盘底部功能键的规格不在本文件：键盘侧是代码构建的，键面取 key_bg（无描边、10dp 圆角、
+         跟键盘皮肤走），页面按钮取 btn_aurora_secondary（描边、12dp 圆角、半透明蓝底）。两者刻意
+         不同源，键盘若借用页面样式，「页面改一次按钮」会悄悄改到键盘。 -->
+
+    <!-- 对话框主题 -->
+
+    <!-- AppTheme 的 alertDialogTheme 指向它：框架 AlertDialog 默认取 Material 浅色对话框主题，
+         暗黑界面下白底黑字与页面撞色，故显式换成 App 的配色令牌；圆角与内边距仍由父主题提供。 -->
+    <style name="AppDialogTheme" parent="@android:style/Theme.Material.Light.Dialog.Alert">
+        <item name="android:colorAccent">@color/accent</item>
+        <item name="android:colorBackground">@color/app_bg</item>
+        <item name="android:textColorPrimary">@color/text_primary</item>
+        <item name="android:textColorSecondary">@color/text_secondary</item>
+    </style>
+</resources>

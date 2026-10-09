@@ -1,0 +1,103 @@
+.gradle/
+build/
+*/build/
+local.properties
+
+.idea/
+*.iml
+.DS_Store
+captures/
+.externalNativeBuild/
+.cxx/
+
+*.apk
+*.keystore
+*.jks
+keystore.properties
+ses_*.json
+*service-account*.json
+*-credentials.json
+
+.codegraph/
+.omo/
+.workbuddy/
+.codebuddy/
+
+artifacts/
+docs/
+release/
+
+tools/dict_builder/out/
+tools/dict_builder/THUOCL注音输出/
+tools/dict_builder/THUOCL-master/
+tools/dict_builder/source/
+
+__pycache__/
+*.pyc
+
+.cm.txt
+.commitmsg.txt
+.relnotes.md
+
+# 发版/签名临时产物
+payload.json
+*.idsig
+*.aab
+/*.zip
+
+# 构建/工具生成目录
+.kotlin/
+.vscode/
+
+# 通用临时文件与崩溃转储
+*.log
+*.tmp
+*.bak
+*.orig
+*.rej
+*.hprof
+
+# 根目录的文本中转产物（写带中文的长文档时用 base64 过一遍命令行，事后忘了删）
+/*.b64
+
+# 根目录截图（真机取证图一律放 .codebuddy/，见 BUG.md L-80；防「误放根目录被 git add -A 提交」）
+# 覆盖常见截图格式：只挡 png 时，误存的 jpg/webp 仍会被提交（本仓是公开仓，截图含输入法界面）
+/*.png
+/*.jpg
+/*.jpeg
+/*.webp
+
+# 加密备份包（含剪贴板明文等隐私数据，绝不入库）
+*.jinn
+
+# 凭据类
+*.p12
+*.pem
+*.pk8
+*.p8
+JinnPassword.md
+
+# 本机自用的工程约定文档（只留本地，不同步到远端）
+工程约定.md
+AGENTS.md
+
+# 本机自用的缺陷台账（只留本地，不同步到远端）
+BUG.md
+
+# 本机自用的项目记忆（逐轮工作记录，含并行会话的过程表述，只留本地）
+项目记忆.md
+/.fail2.txt
+
+# 交接包（一次性快照，只留本地）
+.wwlia-handoff/
+
+
+# PPT 工作区与临时脚本（2026-10-03）：不属于 App 源码，勿入库
+.ppt-master/
+/diag_export.py
+/fix_line_filter.py
+
+# 音效原始素材（WAV 母版 / 参考音）：各站点的免费音效许可都禁止把素材本身再分发，
+# 入库只放 OGG（随 APK 走）与取用脚本 + 清单，见 tools/sound_preview/keyboard_sounds_manifest.md
+tools/sound_preview/masters/
+tools/sound_preview/my/

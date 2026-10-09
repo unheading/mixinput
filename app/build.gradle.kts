@@ -1,0 +1,150 @@
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.Properties
+import java.io.File
+
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+}
+
+// ── 签名配置 ─────────────────────────────────────────────
+// 一键打包脚本经环境变量 JINN_KEYSTORE_ROOT 注入统一密钥库目录（由环境变量指定）；
+// keystore.properties 仅作为手动构建的本地兼容回退，绝不入库。
+val keystoreProps = Properties()
+val ksFile = rootProject.file("keystore.properties")
+if (ksFile.exists()) {
+    // 用 use 关闭流：Properties.load 不接管入参流的所有权。不关会在 Gradle 守护进程
+    // 整个会话里持有 fd，Windows 上还会锁住该文件（编辑/移动报占用）
+    ksFile.inputStream().use { keystoreProps.load(it) }
+}
+
+val externalStoreFile = System.getenv("JINN_KEYSTORE_FILE")?.takeIf { it.isNotBlank() }
+val externalStorePassword = System.getenv("JINN_KEYSTORE_PASSWORD")?.takeIf { it.isNotBlank() }
+val externalKeyAlias = System.getenv("JINN_KEY_ALIAS")?.takeIf { it.isNotBlank() }
+val externalKeyPassword = System.getenv("JINN_KEY_PASSWORD")?.takeIf { it.isNotBlank() }
+val signingStoreFile = externalStoreFile?.let { File(it) }
+    ?: keystoreProps.getProperty("storeFile")?.let(rootProject::file)
+val signingStorePassword = externalStorePassword ?: keystoreProps.getProperty("storePassword")
+val signingKeyAlias = externalKeyAlias ?: keystoreProps.getProperty("keyAlias")
+val signingKeyPassword = externalKeyPassword ?: keystoreProps.getProperty("keyPassword")
+val apksignerOnly = System.getenv("JINN_APKSIGNER_ONLY") == "1"
+
+android {
+    namespace = "com.jinn.inputmethod"
+    compileSdk = 34
+
+    signingConfigs {
+        create("release") {
+            if (!apksignerOnly && signingStoreFile != null && signingStorePassword != null &&
+                signingKeyAlias != null && signingKeyPassword != null) {
+                storeFile = signingStoreFile
+                storePassword = signingStorePassword
+                keyAlias = signingKeyAlias
+                keyPassword = signingKeyPassword
+                // Use modern APK Signature Schemes; V1 is intentionally disabled.
+                enableV1Signing = false
+                enableV2Signing = true
+                enableV3Signing = true
+            }
+        }
+    }
+
+    defaultConfig {
+        applicationId = "com.jinn.inputmethod"
+        // 26 起可只提供自适应图标，且 AudioRecord / VectorDrawable 行为稳定
+        minSdk = 26
+        targetSdk = 34
+        // versionCode 取编译日期（yyyyMMdd，如 20260814），随每次编译递增，天然单调
+        versionCode = SimpleDateFormat("yyyyMMdd", Locale.US).format(Date()).toInt()
+        versionName = "jinn"
+        resourceConfigurations += setOf("zh-rCN")
+    }
+
+    buildFeatures {
+        // 检查更新需要读取 BuildConfig.VERSION_CODE
+        buildConfig = true
+    }
+
+    lint {
+        // 发布基线的例外清单（每条都写了理由）：只忽略「与项目约定冲突」或「刻意设计」的既有告警，
+        // 按文件忽略 —— 被列文件里的同类问题（含新代码）不再报，只有新文件才会照常报出来
+        lintConfig = file("lint.xml")
+        // 发布前把静态检查当门禁：有新 error 直接失败
+        abortOnError = true
+    }
+
+    buildTypes {
+        debug {
+            isMinifyEnabled = false
+        }
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+            // 外部统一密钥或本地兼容配置完整时启用签名，否则保留未签名构建能力。
+            if (!apksignerOnly && signingStoreFile != null && signingStorePassword != null &&
+                signingKeyAlias != null && signingKeyPassword != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
+    }
+
+    androidResources {
+        // 词库以 xz 压缩格式存放，再被 deflate 压一遍既无收益，还拖慢构建
+        noCompress += "xz"
+        // 按键音效（assets/sounds/keyboard/*.ogg）必须能被 SoundPool 经 openFd 打开：
+        // ogg 本就在 aapt 的不压缩默认名单里，这里显式再声明一次，避免将来改打包配置时静默失效
+        // （一旦被压缩，openFd 会直接抛 IOException，按键就彻底没声了）
+        noCompress += "ogg"
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
+
+    packaging {
+        resources.excludes += setOf(
+            "META-INF/*.kotlin_module",
+            "META-INF/*.version",
+            "DebugProbesKt.bin",
+            // OkHttp 的公共后缀表（Cookie 域判断用，41KB）：本应用只走 WebSocket 与几个简单
+            // GET（检查更新），从不解析 Cookie、也不调用 topPrivateDomain()，而它是惰性加载的，
+            // 不发请求就不会被读取。排除后 APK 体积回到 5MB 线下且有约 40KB 余量。
+            "okhttp3/internal/publicsuffix/publicsuffixes.gz",
+            // Kotlin 标准库的反射元数据（约 29KB 未压缩 / 10KB 压缩）：只服务 kotlin-reflect，
+            // 本项目不用 Kotlin 反射（无 kotlin.reflect 依赖、无 Class.forName），运行时无需这些文件。
+            "kotlin/**/*.kotlin_builtins",
+            // 构建工具链元数据，与运行期无关
+            "kotlin-tooling-metadata.json",
+        )
+    }
+}
+
+dependencies {
+    implementation("androidx.core:core-ktx:1.13.1")
+    // Activity Result API（registerForActivityResult）需要 ComponentActivity
+    implementation("androidx.activity:activity-ktx:1.9.0")
+    // 唯一的第三方依赖：WebSocket 客户端
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // 词库解压：词库以 xz 存放（28.0MB → 8.0MB，比 deflate 再省 22%，APK 体积随之下降约 20%），
+    // 加载时流式解压、无需落地磁盘，实测解压约 0.6s 且发生在后台加载线程。
+    implementation("org.tukaani:xz:1.9")
+
+    // ── 本地单元测试（src/test/，JVM，无需设备） ──
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
+}

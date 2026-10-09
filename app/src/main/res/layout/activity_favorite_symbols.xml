@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 收藏符号编辑页：从设置页「编辑收藏符号」按钮进入；网格展示 + ✕ 移除 + 底部添加 -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    style="@style/PageRoot"
+    android:orientation="vertical">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <TextView
+            style="@style/PageTitle"
+            android:text="@string/favorite_title"
+            android:layout_height="wrap_content"/>
+
+        <Button
+            style="@style/PageCloseButton"
+            android:id="@+id/btn_favorite_close" />
+    </LinearLayout>
+
+    <TextView
+        style="@style/PageDesc"
+        android:id="@+id/text_favorite_desc"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"/>
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:overScrollMode="never"
+        android:scrollbars="none">
+
+        <LinearLayout
+            android:id="@+id/favorite_list"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
+    </ScrollView>
+
+    <Button
+        style="@style/SettingsButton"
+        android:id="@+id/btn_favorite_add"
+        android:layout_width="match_parent"
+        android:layout_marginTop="4dp"/>
+</LinearLayout>
