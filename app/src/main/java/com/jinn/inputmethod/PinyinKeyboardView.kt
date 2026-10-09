@@ -354,6 +354,9 @@ class PinyinKeyboardView @JvmOverloads constructor(
     /** 候选缓存：空格取第一个 */
     private var lastCandidates: List<String> = emptyList()
 
+    /** 上一帧候选是否来自 Rime —— 决定选词时走哪个引擎上屏 */
+    private var candidatesFromRime = false
+
     /** 智能预测缓存：选中词后 PinyinEngine.predict 的结果 */
     private var lastPredictions: List<String> = emptyList()
 
@@ -2309,30 +2312,27 @@ class PinyinKeyboardView @JvmOverloads constructor(
         // 双拼：先转全拼再查询；显示仍保留双拼原文
         val queryInput = if (shuangpinMode) Shuangpin.toQuanpin(input, scheme) else input
 
-        // ── Rime 模式：候选来自 librime（五笔 / 自定义方案），不经过 Jinn 自带引擎 ──
-        if (RimeBridge.isModeEnabled(context)) {
-            showPinyin(displayText)
-            if (!RimeBridge.isReady) {
-                lastCandidates = emptyList()
-                renderCandidateHint("Rime 引擎初始化中…")
-                return
-            }
+        // ── Rime 模式：候选来自 librime。
+        //    ⚠ 未就绪或没候选时**落回下面的 Jinn 引擎**：初始化要等方案编译（首次可能几十秒），
+        //    早期版本在这里直接 return，用户会一直卡在「初始化中」而无法打字。──
+        if (RimeBridge.isModeEnabled(context) && RimeBridge.isReady) {
             val rimeCandidates = RimeBridge.query(queryInput)
-            lastCandidates = rimeCandidates
-            if (rimeCandidates.isEmpty()) {
-                renderCandidateHint("Rime 无候选")
+            if (rimeCandidates.isNotEmpty()) {
+                lastCandidates = rimeCandidates
+                candidatesFromRime = true
+                showPinyin(displayText)
+                renderCandidateItems(
+                    items = rimeCandidates.take(MAX_RENDERED_CANDIDATES),
+                    rows = rows,
+                    rowHeightPx = perRow,
+                    colorToken = skin.functionGlyph,
+                    colorRes = R.color.text_primary,
+                    onClick = { onCandidateSelected(it) },
+                )
                 return
             }
-            renderCandidateItems(
-                items = rimeCandidates.take(MAX_RENDERED_CANDIDATES),
-                rows = rows,
-                rowHeightPx = perRow,
-                colorToken = skin.functionGlyph,
-                colorRes = R.color.text_primary,
-                onClick = { onCandidateSelected(it) },
-            )
-            return
         }
+        candidatesFromRime = false
 
         val result = PinyinEngine.query(queryInput)
         // 补全诊断：只在末尾存在不完整音节时记录。
@@ -2555,8 +2555,8 @@ class PinyinKeyboardView @JvmOverloads constructor(
         }
         if (Diagnostics.KEY_TRACE) Diagnostics.v(TAG, "候选上屏: \"$candidate\" (拼音=${composing})")
 
-        // ── Rime 模式：把选中项交给引擎，由上屏文本决定内容（可能含已确定的残码）──
-        if (RimeBridge.isModeEnabled(context) && RimeBridge.isReady) {
+        // ── Rime 上屏：仅当上一帧候选确实来自 Rime（否则是回退后的 Jinn 候选，不能走引擎选择）──
+        if (candidatesFromRime && RimeBridge.isReady) {
             val idx = lastCandidates.indexOf(candidate)
             val text = (if (idx >= 0) RimeBridge.selectAndCommit(idx) else null) ?: candidate
             if (Diagnostics.KEY_TRACE) Diagnostics.v(TAG, "Rime 上屏: \"$text\"")

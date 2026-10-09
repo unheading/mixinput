@@ -21,10 +21,14 @@ object RimeBridge {
     private const val ASSET_DIR = "rime"
     private const val PREFS = "rime_bridge"
     private const val KEY_ENABLED = "rime_mode_enabled"
+    private const val KEY_ASSET_STAMP = "assets_stamp"
 
     private val executor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "jinn-rime-init").apply { isDaemon = true }
     }
+
+    /** 等待 Rime 方案编译的上限（首次部署可能较慢） */
+    private const val SESSION_WAIT_MS = 30_000L
     private val started = AtomicBoolean(false)
 
     @Volatile
@@ -57,7 +61,12 @@ object RimeBridge {
                 user.mkdirs()
                 val engine = RimeEngine.getInstance()
                 engine.initialize(user.absolutePath, shared.absolutePath)
-                engine.ensureSession()
+                // ensureSession 会等 Rime 编译方案（首次可能几十秒）；
+                // 若仍拿不到方案，说明还没部署过 —— 主动部署一次再等。
+                if (!engine.ensureSession(SESSION_WAIT_MS)) {
+                    engine.deploy()
+                    engine.ensureSession(SESSION_WAIT_MS)
+                }
                 isReady = true
                 lastError = null
             } catch (t: Throwable) {
@@ -144,24 +153,33 @@ object RimeBridge {
 
     /** 把 assets/rime/ 下的方案数据释放到 [target]。
      *
-     * 每个文件按大小比对：大小一致就跳过，避免每次启动重写 2MB+ 的词库。
+     * 按「包版本号戳记」判断是否需要重新解包：版本没变就跳过，避免每次启动重写 1MB+ 的词库；
      * 用户目录里的编译产物与学习记录不受影响。
+     *
+     * ⚠ 不能用 `assets.openFd()` 探测大小：它只对 APK 中**未压缩**的资源有效，
+     * 而 .yaml 是被压缩的，调用会抛异常（曾导致方案数据从未被解出、引擎永远「初始化中」）。
      */
     private fun extractAssets(context: Context, target: File) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val stamp = try {
+            @Suppress("DEPRECATION")
+            context.packageManager.getPackageInfo(context.packageName, 0).versionCode
+        } catch (_: Throwable) {
+            0
+        }
+        if (target.exists() && prefs.getInt(KEY_ASSET_STAMP, -1) == stamp) return
         if (!target.exists() && !target.mkdirs()) return
         val names = context.assets.list(ASSET_DIR) ?: return
         for (name in names) {
             val out = File(target, name)
             try {
                 context.assets.open("$ASSET_DIR/$name").use { input ->
-                    if (out.exists() && out.length() == context.assets.openFd("$ASSET_DIR/$name").use { it.length }) {
-                        return@use
-                    }
                     out.outputStream().use { output -> input.copyTo(output) }
                 }
             } catch (_: Throwable) {
                 // 单个文件失败不影响其他方案文件；下次启动会重试
             }
         }
+        prefs.edit().putInt(KEY_ASSET_STAMP, stamp).apply()
     }
 }
