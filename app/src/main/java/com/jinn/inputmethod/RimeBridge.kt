@@ -99,16 +99,17 @@ object RimeBridge {
     }
 
     /**
-     * 把整串输入交给 Rime，返回候选（不含方案名注释）。
-     * 引擎未就绪或调用异常时返回空列表，调用方按「无候选」处理即可。
+     * 带注释的候选（如五笔方案的编码提示）。
+     * 返回「候选词 to 注释」，注释为空时调用方不显示提示。
      */
-    fun query(input: String): List<String> {
-        if (input.isEmpty()) return emptyList()
-        if (!isReady) return emptyList()
+    fun queryWithComments(input: String): List<Pair<String, String>> {
+        if (input.isEmpty() || !isReady) return emptyList()
         return try {
             val engine = RimeEngine.getInstance()
             engine.setInput(input)
-            engine.getCandidates().toList()
+            engine.getCandidatesWithComments()
+                .map { it.text to it.comment }
+                .filter { it.first.isNotEmpty() }
         } catch (_: Throwable) {
             emptyList()
         }
