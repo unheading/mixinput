@@ -842,7 +842,7 @@ class PinyinKeyboardView @JvmOverloads constructor(
             refreshKeyLabels()
             Diagnostics.i(TAG, "中英切换: ${if (englishMode) "英文" else "中文"}")
         }
-        // 长按「中/英」：循环切换输入引擎 —— 关闭 → Rime拼音 → 五笔86 → 五笔拼音 → 关闭。
+        // 长按「中/英」：切换输入引擎（关闭 ↔ Rime 拼音）。
         // 放在长按上是为了不占用已习惯的单击中英切换，而模式开关是低频操作。
         btnLang.setOnLongClickListener {
             KeyFeedback.fire(TapSound.G_FUNC)
@@ -2147,7 +2147,6 @@ class PinyinKeyboardView @JvmOverloads constructor(
         rowHeightPx: Int,
         colorToken: Int?,
         colorRes: Int,
-        comments: Map<String, String>? = null,
         onClick: (String) -> Unit,
     ) {
         // 候选字距（水平，用户可在键盘外观页调）：本帧只读一次 Prefs（与 refreshCandidateBar 同约定）。
@@ -2168,31 +2167,14 @@ class PinyinKeyboardView @JvmOverloads constructor(
         val fontScaleToken = (resources.configuration.fontScale * 100f).toInt()
         val renderKey = items.hashCode().toLong() * 31 + rows * 7 + spacingHalfPx * 13 +
             (colorToken?.hashCode()?.toLong() ?: 0L) + colorRes + sizeSp.toInt() * 17 +
-            fontScaleToken * 23 + (comments?.hashCode()?.toLong() ?: 0L) * 29
+            fontScaleToken * 23
         if (renderKey == candidateRenderKey) return
         candidateRenderKey = renderKey
         viewCandidateList.removeAllViews()
         // 行高被固定成 EXACTLY 后，TextView 默认的 TOP 对齐会让文字贴在行顶（两排在栏内
         // 整体偏上），故显式居中；单行档宽高都是 wrap_content，加它不改变现状。
         fun build(text: String): TextView = TextView(context).apply {
-            val hint = comments?.get(text)
-            if (hint.isNullOrEmpty()) {
-                this.text = text
-            } else {
-                // 编码提示（如五笔码）以更小字号 + 次级颜色跟在候选后面，不干扰主候选的阅读
-                val span = android.text.SpannableString("$text  $hint")
-                span.setSpan(
-                    android.text.style.RelativeSizeSpan(0.62f),
-                    text.length, span.length,
-                    android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
-                )
-                span.setSpan(
-                    android.text.style.ForegroundColorSpan(0x80909090.toInt()),
-                    text.length, span.length,
-                    android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
-                )
-                this.text = span
-            }
+            this.text = text
             textSize = sizeSp
             gravity = android.view.Gravity.CENTER
             setTextColor(skinToken(colorToken, colorRes))
@@ -2335,9 +2317,7 @@ class PinyinKeyboardView @JvmOverloads constructor(
                 renderCandidateHint("Rime 引擎初始化中…")
                 return
             }
-            val withComments = RimeBridge.queryWithComments(queryInput)
-            val rimeCandidates = withComments.map { it.first }
-            val commentMap = withComments.mapNotNull { (w, c) -> if (c.isEmpty()) null else w to c }.toMap()
+            val rimeCandidates = RimeBridge.query(queryInput)
             lastCandidates = rimeCandidates
             if (rimeCandidates.isEmpty()) {
                 renderCandidateHint("Rime 无候选")
@@ -2349,7 +2329,6 @@ class PinyinKeyboardView @JvmOverloads constructor(
                 rowHeightPx = perRow,
                 colorToken = skin.functionGlyph,
                 colorRes = R.color.text_primary,
-                comments = commentMap,
                 onClick = { onCandidateSelected(it) },
             )
             return

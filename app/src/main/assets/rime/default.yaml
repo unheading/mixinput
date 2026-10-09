@@ -5,8 +5,6 @@ config_version: "0.36"
 
 schema_list:
   - schema: pinyin_simp
-  - schema: wubi86
-  - schema: wubi86_pinyin
 
 switcher:
   caption: "〔方案选单〕"
