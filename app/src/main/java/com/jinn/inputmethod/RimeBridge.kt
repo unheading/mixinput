@@ -21,6 +21,7 @@ object RimeBridge {
     private const val ASSET_DIR = "rime"
     private const val PREFS = "rime_bridge"
     private const val KEY_ENABLED = "rime_mode_enabled"
+    private const val KEY_T9 = "t9_mode_enabled"
 
     private val executor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "jinn-rime-init").apply { isDaemon = true }
@@ -76,6 +77,49 @@ object RimeBridge {
     fun setModeEnabled(context: Context, enabled: Boolean) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit().putBoolean(KEY_ENABLED, enabled).apply()
+    }
+
+    /** 是否处于九宫格（T9）输入态 */
+    fun isT9Enabled(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_T9, false)
+
+    fun setT9Enabled(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putBoolean(KEY_T9, enabled).apply()
+    }
+
+    // ── T9（九宫格）────────────────────────────────────────────
+    // 九键不是「把数字当字母」：流程是 数字串 → 音节候选 → 选定拼音 → 交给 Rime 出词。
+    // 这套机制在 librime-t9 里（已随 librime_jni.so 一起内置），这里只做转发。
+
+    /** 数字串对应的首音节候选：拼音 to 需消耗的数字位数 */
+    fun t9SyllableOptions(digits: String, max: Int = 8): List<Pair<String, Int>> {
+        if (!isReady || digits.isEmpty()) return emptyList()
+        return try {
+            RimeEngine.getInstance().t9GetFirstSyllableOptions(digits, max)
+        } catch (_: Throwable) {
+            emptyList()
+        }
+    }
+
+    /** 选定一个拼音音节并消费 [digitLength] 位数字；之后由 Rime 给出候选 */
+    fun t9SelectSyllable(pinyin: String, digitLength: Int): Boolean {
+        if (!isReady) return false
+        return try {
+            RimeEngine.getInstance().t9SelectPinyinDirect(pinyin, digitLength)
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /** 尚未被消费的数字（用于继续拼下一个音节） */
+    fun t9RemainingDigits(): String {
+        if (!isReady) return ""
+        return try {
+            RimeEngine.getInstance().t9GetRemainingDigits()
+        } catch (_: Throwable) {
+            ""
+        }
     }
 
     /** 可切换的 Rime 方案，顺序即长按循环顺序（需与 assets/rime 中实际存在的方案一致） */
