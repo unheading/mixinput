@@ -13,6 +13,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # 发布 Release 需要写权限（默认 token 在部分仓库上是只读）
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout
@@ -101,3 +104,31 @@ jobs:
             app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 30
+
+      # 把 APK 换成好认的名字，方便作为 Release 附件发布
+      - name: Prepare APK
+        run: |
+          mkdir -p out
+          for f in app/build/outputs/apk/release/*.apk app/build/outputs/apk/debug/*.apk; do
+            [ -f "$f" ] || continue
+            cp "$f" "out/mixinput-${GITHUB_RUN_NUMBER}.apk"
+          done
+          ls -la out/
+
+      # 发布为 Release：手机上一键下载，不像 Artifacts 那样需要登录与翻找。
+      # 每次构建一个新 tag（不覆盖历史产物），标记为 prerelease 以免占用 Latest。
+      - name: Publish Release with APK
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: 构建 ${{ github.run_number }}
+          body: |
+            自动构建产物
+
+            - 提交：`${{ github.sha }}`
+            - 构建号：${{ github.run_number }}
+            - 下载下方 Asset 中的 APK 直接安装
+          files: out/*.apk
+          prerelease: true
+          fail_on_unmatched_files: false
