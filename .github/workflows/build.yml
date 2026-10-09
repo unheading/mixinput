@@ -81,6 +81,38 @@ jobs:
           path: app/build/reports/tests/testDebugUnitTest
           if-no-files-found: ignore
 
+      # 把测试结果汇总到 Actions 页面的 Summary：失败用例直接列名，
+      # 不用下载报告就能判断「哪些失败、是否只是文档门禁」。
+      - name: Summarize test results
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import glob, os
+          import xml.etree.ElementTree as ET
+
+          total = fails = errors = skipped = 0
+          failed = []
+          for f in glob.glob('app/build/test-results/testDebugUnitTest/*.xml'):
+              root = ET.parse(f).getroot()
+              total += int(root.get('tests', 0))
+              fails += int(root.get('failures', 0))
+              errors += int(root.get('errors', 0))
+              skipped += int(root.get('skipped', 0))
+              for tc in root.iter('testcase'):
+                  if tc.find('failure') is not None or tc.find('error') is not None:
+                      failed.append(f"{tc.get('classname')} :: {tc.get('name')}")
+
+          lines = ['# 单元测试结果', '', f'- 总数：{total}', f'- 失败：{fails + errors}', f'- 跳过：{skipped}', '']
+          if failed:
+              lines.append('## 失败用例')
+              lines += [f'- `{x}`' for x in failed[:60]]
+              if len(failed) > 60:
+                  lines.append(f'- …另有 {len(failed) - 60} 条')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'w') as fh:
+              fh.write('\n'.join(lines))
+          print(f'total={total} failed={fails + errors} skipped={skipped}')
+          PY
+
       # 有签名密钥就出 release（可覆盖安装、可发布），没有就退化为 debug（可直接安装验证）。
       # 密钥通过仓库 Secrets 提供，避免把签名材料写进代码库。
       - name: Build APK
